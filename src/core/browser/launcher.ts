@@ -14,6 +14,9 @@ import {
 import { resolveChromium, getChromiumInstallHint, checkTlsReadiness, isPatchedSource, requirePatchedChromium } from '../fingerprint/chromium-resolver.js';
 import { validateFingerprintQuick } from '../fingerprint/validator.js';
 import { validateFingerprintExternal, validateFingerprintQuickExternal } from '../fingerprint/external-validator.js';
+import { FP_LAUNCH_GATE_DESCRIPTION, FP_LAUNCH_GATE_SCOPE } from '../fingerprint/antidetect-policy.js';
+import { networkFingerprintWarnings } from '../fingerprint/network-limitations.js';
+import { validateProxyGeoAlignment } from '../fingerprint/geo.js';
 import { warmupRunner } from '../automation/warmup-runner.js';
 import { rpaRecorder } from '../automation/rpa-recorder.js';
 import { rpaPlayer } from '../automation/rpa-player.js';
@@ -70,11 +73,15 @@ async function applyCdpUserAgentOverride(context: BrowserContext, profile: Brows
   const cf = buildCanonicalFingerprint(profile.fingerprint, profile.fingerprintId);
   const page = context.pages()[0] ?? await context.newPage();
   const cdp = await context.newCDPSession(page);
-  await cdp.send('Network.enable');
-  await cdp.send('Network.setUserAgentOverride', {
-    userAgent: cf.ua,
-    userAgentMetadata: canonicalToCdpUserAgentMetadata(cf),
-  });
+  try {
+    await cdp.send('Network.enable');
+    await cdp.send('Network.setUserAgentOverride', {
+      userAgent: cf.ua,
+      userAgentMetadata: canonicalToCdpUserAgentMetadata(cf),
+    });
+  } finally {
+    await cdp.detach().catch(() => {});
+  }
 }
 
 export class BrowserLauncher {
@@ -148,6 +155,11 @@ export class BrowserLauncher {
       const isMobile = fp.formFactor === 'mobile';
       const useNativeKernel = isPatchedSource(chromiumInfo.source);
       const enableCdp = options?.enableCdp ?? profile.enableCdp ?? false;
+
+      const geoCheck = await validateProxyGeoAlignment(profile, activeProxy);
+      if (!geoCheck.ok) {
+        return { success: false, profileId: profile.id, error: geoCheck.error };
+      }
 
       const args = [...buildLaunchArgs(profile, profile.fingerprintId)];
       let debugPort: number | undefined;
@@ -228,12 +240,19 @@ export class BrowserLauncher {
             return {
               success: false,
               profileId: profile.id,
-              error: `Detection score ${fpScore}% below minimum ${profile.minFpScore}%`,
+              error: `Launch gate score ${fpScore}% below minimum ${profile.minFpScore}% (${FP_LAUNCH_GATE_SCOPE} — not CreepJS/Pixelscan)`,
               fpScore,
+              fpGateScope: FP_LAUNCH_GATE_SCOPE,
             };
           }
         }
       }
+
+      const warnings = [
+        ...(!useNativeKernel ? ['Running degraded JS fallback — install patched fingerprint-chromium for best results'] : []),
+        ...(geoCheck.warning ? [geoCheck.warning] : []),
+        ...networkFingerprintWarnings(),
+      ];
 
       return {
         success: true,
@@ -243,9 +262,9 @@ export class BrowserLauncher {
         tlsReady: true,
         warmupStarted,
         fpScore,
-        antidetectWarnings: !useNativeKernel
-          ? ['Running degraded JS fallback — install patched fingerprint-chromium for best results']
-          : undefined,
+        antidetectWarnings: warnings.length > 0 ? warnings : undefined,
+        fpGateScope: profile.minFpScore > 0 ? FP_LAUNCH_GATE_SCOPE : undefined,
+        fpGateNote: profile.minFpScore > 0 ? FP_LAUNCH_GATE_DESCRIPTION : undefined,
       };
     } catch (err) {
       return {

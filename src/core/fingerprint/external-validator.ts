@@ -18,6 +18,8 @@ export interface ExternalValidationReport extends ValidationReport {
   detectionScore: number;
   sites: DetectionSiteResult[];
   minEngineScore: number;
+  /** What engines the score gate reflects (launch gate is quick-internal+sannysoft only). */
+  gateScope?: string;
 }
 
 export const DEFAULT_MIN_DETECTION_SCORE = 70;
@@ -222,6 +224,7 @@ export async function validateFingerprintQuickExternal(page: Page): Promise<Exte
     externalScore: agg.externalScore,
     detectionScore: combinedScore,
     minEngineScore: sanny.parsed ? Math.min(quick.score, sanny.score ?? 0) : quick.score,
+    gateScope: 'quick-internal+sannysoft',
     sites,
     score: combinedScore,
     passed: quick.passed + (sanny.pass ? 1 : 0),
@@ -261,6 +264,7 @@ export async function validateFingerprintExternal(
     externalScore: agg.externalScore,
     detectionScore: agg.detectionScore,
     minEngineScore: agg.minEngineScore,
+    gateScope: 'full-external-engines',
     sites,
   };
 }

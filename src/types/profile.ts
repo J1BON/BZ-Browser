@@ -149,6 +149,8 @@ export interface LaunchResult {
   tlsWarning?: string;
   warmupStarted?: boolean;
   fpScore?: number;
+  fpGateScope?: string;
+  fpGateNote?: string;
   antidetectWarnings?: string[];
 }
 

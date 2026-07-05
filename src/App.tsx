@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { BrowserProfile, SyncState, SyncConflict, ValidationReport } from './types/profile';
-import { antidetectWarnings } from './core/fingerprint/antidetect-policy';
+import { antidetectWarnings, FP_LAUNCH_GATE_DESCRIPTION, FP_LAUNCH_GATE_SCOPE } from './core/fingerprint/antidetect-policy';
 import type { SavedProxy, ExtensionEntry, AutomationStatus, UpdateState } from './types/phase4';
 import type { TeamState, TeamRole } from './types/team';
 import type { RpaScript, RpaRecordingState } from './types/rpa';
@@ -445,10 +445,11 @@ export default function App() {
                     <input type="checkbox" checked={headless} onChange={(e) => setHeadless(e.target.checked)} />
                     Headless launch
                   </label>
-                  <label className="toggle-label">
-                    Min FP score gate:
+                  <label className="toggle-label" title={FP_LAUNCH_GATE_DESCRIPTION}>
+                    Launch FP gate ({FP_LAUNCH_GATE_SCOPE}):
                     <input type="number" min={0} max={100} value={minFpScore} onChange={(e) => setMinFpScore(Number(e.target.value))} style={{ width: 56, marginLeft: 8 }} />
                   </label>
+                  <p className="hint" style={{ fontSize: 12, opacity: 0.75, margin: '4px 0 0' }}>{FP_LAUNCH_GATE_DESCRIPTION}</p>
                   <button onClick={handleSaveMeta}>Save Meta</button>
                 </div>
                 <div className="grid">
@@ -534,7 +535,8 @@ export default function App() {
                   </Section>
                   <Section title="Device Fingerprint">
                     <Row label="Signature" value={selected.deviceSignature ?? '—'} mono />
-                    <Row label="FP gate" value={`${selected.minFpScore ?? 85}% minimum`} />
+                    <Row label="FP gate" value={`${selected.minFpScore ?? 85}% min (${FP_LAUNCH_GATE_SCOPE})`} />
+                    <Row label="FP gate scope" value={FP_LAUNCH_GATE_DESCRIPTION} />
                     <Row label="Form factor" value={`${selected.fingerprint.formFactor ?? 'desktop'} · ${selected.fingerprint.device}`} />
                     <Row label="Engine" value={selected.fingerprint.device === 'iOS' ? 'Safari UA on Chromium (risky)' : 'Chromium-consistent'} />
                     <Row label="Screen" value={`${selected.fingerprint.screenWidth ?? selected.fingerprint.windowWidth}×${selected.fingerprint.screenHeight ?? selected.fingerprint.windowHeight}`} />

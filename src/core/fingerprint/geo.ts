@@ -1,4 +1,4 @@
-import type { GeoIpResult } from '../../types/profile.js';
+import type { GeoIpResult, BrowserProfile, ProxyConfig } from '../../types/profile.js';
 
 const IP_LOOKUP_ENDPOINTS = [
   'https://ipapi.co/json/',
@@ -60,4 +60,40 @@ function countryCodeToLanguages(code: string): string[] {
     BD: ['bn-BD', 'en-BD'],
   };
   return map[code.toUpperCase()] ?? ['en-US', 'en'];
+}
+
+export interface ProxyGeoValidation {
+  ok: boolean;
+  error?: string;
+  warning?: string;
+}
+
+/** Block launch when proxy exit geo timezone disagrees with profile (after health-check alignment). */
+export async function validateProxyGeoAlignment(
+  profile: BrowserProfile,
+  proxy: ProxyConfig,
+): Promise<ProxyGeoValidation> {
+  if (!proxy.host || !proxy.port) return { ok: true };
+
+  if (!proxy.ip) {
+    return {
+      ok: true,
+      warning: 'Proxy exit IP unknown — run proxy health check to align timezone/geo before launch.',
+    };
+  }
+
+  const geo = await lookupGeoFromIp(proxy.ip);
+  if (!geo) {
+    return { ok: true, warning: `Could not resolve geo for proxy IP ${proxy.ip}` };
+  }
+
+  const tz = profile.fingerprint.timeZone;
+  if (geo.timezone !== tz) {
+    return {
+      ok: false,
+      error: `Profile timezone "${tz}" does not match proxy exit "${geo.timezone}" (${geo.country}/${geo.city}). Re-run proxy health check to auto-align.`,
+    };
+  }
+
+  return { ok: true };
 }

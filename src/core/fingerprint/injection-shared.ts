@@ -1,11 +1,16 @@
 /** Shared in-page hook body used by main thread and Worker scopes (must stay identical). */
 
+import { buildNativeMaskBootstrap } from './injection-native-mask.js';
+
 export function buildScopeHooksBody(): string {
   return `
-  function defineProtoGetter(proto, key, getter) {
+  ${buildNativeMaskBootstrap()}
+
+  function defineProtoGetter(proto, key, getterFn) {
     if (!proto) return;
     try {
       var orig = Object.getOwnPropertyDescriptor(proto, key);
+      var getter = maskNative(getterFn, 'get ' + key);
       Object.defineProperty(proto, key, {
         get: getter,
         enumerable: orig ? orig.enumerable : true,
@@ -144,33 +149,35 @@ export function buildScopeHooksBody(): string {
     }
   }
 
+  var _nativeCtxGetImageData = CanvasRenderingContext2D.prototype.getImageData;
+  function readNoisedImageData(ctx, sx, sy, sw, sh) {
+    var img = _nativeCtxGetImageData.call(ctx, sx, sy, sw, sh);
+    return applyUnifiedNoise(img, sx || 0, sy || 0);
+  }
+
   function patchCanvasNoise() {
     if (!FP.canvasNoise) return;
-    var origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
-    CanvasRenderingContext2D.prototype.getImageData = function(sx, sy, sw, sh) {
-      var img = origGetImageData.apply(this, arguments);
-      return applyUnifiedNoise(img, sx || 0, sy || 0);
-    };
+    CanvasRenderingContext2D.prototype.getImageData = maskNative(function(sx, sy, sw, sh) {
+      return readNoisedImageData(this, sx, sy, sw, sh);
+    }, 'getImageData');
     if (typeof OffscreenCanvas !== 'undefined') {
       var origOC = OffscreenCanvas.prototype.getContext;
       var origConvertToBlob = OffscreenCanvas.prototype.convertToBlob;
       OffscreenCanvas.prototype.getContext = function(type, attrs) {
         var ctx = origOC.call(this, type, attrs);
         if (ctx && type === '2d') {
-          var origGet = ctx.getImageData.bind(ctx);
-          ctx.getImageData = function(sx, sy, sw, sh) {
-            return applyUnifiedNoise(origGet(sx, sy, sw, sh), sx || 0, sy || 0);
-          };
+          ctx.getImageData = maskNative(function(sx, sy, sw, sh) {
+            return readNoisedImageData(ctx, sx, sy, sw, sh);
+          }, 'getImageData');
         }
         return ctx;
       };
       if (origConvertToBlob) {
-        OffscreenCanvas.prototype.convertToBlob = function(options) {
+        OffscreenCanvas.prototype.convertToBlob = maskNative(function(options) {
           var self = this;
           var ctx = self.getContext('2d');
           if (ctx && self.width && self.height) {
-            var origGet = ctx.getImageData.bind(ctx);
-            var img = origGet(0, 0, self.width, self.height);
+            var img = _nativeCtxGetImageData.call(ctx, 0, 0, self.width, self.height);
             var backup = new Uint8ClampedArray(img.data);
             applyUnifiedNoise(img, 0, 0);
             ctx.putImageData(img, 0, 0);
@@ -180,14 +187,152 @@ export function buildScopeHooksBody(): string {
             });
           }
           return origConvertToBlob.call(self, options);
-        };
+        }, 'convertToBlob');
       }
     }
+  }
+
+  function patchAudioNoise() {
+    var sampleRate = FP.audioSampleRate || 44100;
+    function noiseArray(arr, prefix) {
+      for (var i = 0; i < arr.length; i++) arr[i] += (detUnit(prefix + ':' + i) - 0.5) * 0.0001;
+    }
+    function patchAnalyser(analyser) {
+      var methods = ['getFloatFrequencyData', 'getFloatTimeDomainData', 'getByteFrequencyData', 'getByteTimeDomainData'];
+      for (var m = 0; m < methods.length; m++) {
+        (function(method) {
+          if (!analyser[method]) return;
+          var orig = analyser[method].bind(analyser);
+          analyser[method] = maskNative(function(arr) {
+            orig(arr);
+            noiseArray(arr, 'a:' + method);
+          }, method);
+        })(methods[m]);
+      }
+      return analyser;
+    }
+    if (typeof AudioBuffer !== 'undefined') {
+      var origGetChannel = AudioBuffer.prototype.getChannelData;
+      AudioBuffer.prototype.getChannelData = maskNative(function(channel) {
+        var data = origGetChannel.call(this, channel);
+        for (var i = 0; i < data.length; i += 100) {
+          data[i] += (detUnit('ab:' + channel + ':' + i) - 0.5) * 1e-7;
+        }
+        return data;
+      }, 'getChannelData');
+    }
+    var OrigAC = typeof AudioContext !== 'undefined' ? AudioContext : (typeof webkitAudioContext !== 'undefined' ? webkitAudioContext : null);
+    if (OrigAC) {
+      defineProtoGetter(OrigAC.prototype, 'sampleRate', function() { return sampleRate; });
+      var origCreateAnalyser = OrigAC.prototype.createAnalyser;
+      OrigAC.prototype.createAnalyser = maskNative(function() {
+        return patchAnalyser(origCreateAnalyser.call(this));
+      }, 'createAnalyser');
+      var origCreateOsc = OrigAC.prototype.createOscillator;
+      OrigAC.prototype.createOscillator = maskNative(function() {
+        var osc = origCreateOsc.call(this);
+        try {
+          if (osc.detune) osc.detune.value = (detUnit('osc:' + FP.seed) - 0.5) * 0.01;
+        } catch(e) {}
+        return osc;
+      }, 'createOscillator');
+    }
+    var OrigOffline = typeof OfflineAudioContext !== 'undefined' ? OfflineAudioContext : (typeof webkitOfflineAudioContext !== 'undefined' ? webkitOfflineAudioContext : null);
+    if (OrigOffline) {
+      defineProtoGetter(OrigOffline.prototype, 'sampleRate', function() { return sampleRate; });
+      var origStartRendering = OrigOffline.prototype.startRendering;
+      OrigOffline.prototype.startRendering = maskNative(function() {
+        return origStartRendering.call(this).then(function(buffer) {
+          for (var ch = 0; ch < buffer.numberOfChannels; ch++) {
+            var data = buffer.getChannelData(ch);
+            for (var i = 0; i < data.length; i += 100) {
+              data[i] += (detUnit('o:' + ch + ':' + i) - 0.5) * 1e-7;
+            }
+          }
+          return buffer;
+        });
+      }, 'startRendering');
+    }
+  }
+
+  function patchFontSpoof() {
+    if (!FP.fontSpoof || !FP.fonts || !FP.fonts.length) return;
+    var allowed = FP.fonts;
+    var fallback = allowed[0];
+    function extractFamilies(fontStr) {
+      if (!fontStr) return [];
+      return fontStr.split(',').map(function(f) { return f.replace(/['"]/g, '').trim(); });
+    }
+    function isGeneric(f) {
+      return !f || f === 'inherit' || f === 'serif' || f === 'sans-serif' || f === 'monospace' || f === 'cursive' || f === 'fantasy';
+    }
+    function hasDisallowedFont(families) {
+      for (var i = 0; i < families.length; i++) {
+        var f = families[i];
+        if (isGeneric(f)) continue;
+        var ok = false;
+        for (var j = 0; j < allowed.length; j++) {
+          if (f.toLowerCase() === allowed[j].toLowerCase()) { ok = true; break; }
+        }
+        if (!ok) return true;
+      }
+      return false;
+    }
+    function remapFont(fontStr) {
+      var families = extractFamilies(fontStr);
+      if (!hasDisallowedFont(families)) return fontStr;
+      for (var i = 0; i < families.length; i++) {
+        if (!isGeneric(families[i])) return fontStr.replace(families[i], fallback);
+      }
+      return fontStr;
+    }
+    var origMeasureText = CanvasRenderingContext2D.prototype.measureText;
+    CanvasRenderingContext2D.prototype.measureText = maskNative(function(text) {
+      var saved = this.font;
+      var remapped = remapFont(saved);
+      if (remapped !== saved) this.font = remapped;
+      var r = origMeasureText.call(this, text);
+      if (remapped !== saved) this.font = saved;
+      return r;
+    }, 'measureText');
+    if (typeof document !== 'undefined' && document.fonts && document.fonts.check) {
+      var origCheck = document.fonts.check.bind(document.fonts);
+      document.fonts.check = maskNative(function(font, text) {
+        if (hasDisallowedFont(extractFamilies(font || ''))) return false;
+        return origCheck(font, text);
+      }, 'check');
+    }
+    function patchOffset(prop) {
+      var desc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, prop);
+      if (!desc || !desc.get) return;
+      var origGet = desc.get;
+      Object.defineProperty(HTMLElement.prototype, prop, {
+        get: maskNative(function() {
+          try {
+            var ff = this.style && this.style.fontFamily;
+            if (ff && hasDisallowedFont(extractFamilies(ff))) {
+              var saved = this.style.fontFamily;
+              this.style.fontFamily = fallback + ', sans-serif';
+              var v = origGet.call(this);
+              this.style.fontFamily = saved;
+              return v;
+            }
+          } catch(e) {}
+          return origGet.call(this);
+        }, 'get ' + prop),
+        configurable: true,
+        enumerable: desc.enumerable !== false,
+      });
+    }
+    patchOffset('offsetWidth');
+    patchOffset('offsetHeight');
   }
 
   patchNavigator();
   patchPlugins();
   if (FP.canvasNoise) patchCanvasNoise();
+  if (FP.audioNoise) patchAudioNoise();
+  if (FP.fontSpoof) patchFontSpoof();
   try {
     hookWebGL(WebGLRenderingContext.prototype);
     if (typeof WebGL2RenderingContext !== 'undefined') hookWebGL(WebGL2RenderingContext.prototype);

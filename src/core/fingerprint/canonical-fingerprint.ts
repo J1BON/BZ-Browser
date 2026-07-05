@@ -60,6 +60,35 @@ export interface CanonicalFingerprint {
   macValue: string;
   deviceNameValue: string;
   proxyIp: string;
+  audioSampleRate: number;
+  webRtcProtect: boolean;
+  webRtcBlock: boolean;
+  notificationPermission: 'default' | 'denied' | 'granted';
+  availLeft: number;
+  availTop: number;
+  screenOrientation: string;
+}
+
+function resolveHwConcurrency(fp: FingerprintConfig, seed: string, isMobile: boolean): number {
+  if (fp.hardwareConcurrency != null) {
+    return isMobile
+      ? Math.min(8, Math.max(4, fp.hardwareConcurrency))
+      : Math.min(16, Math.max(4, fp.hardwareConcurrency));
+  }
+  return isMobile ? seedInt(`${seed}:hw`, 4, 8) : seedInt(`${seed}:hw`, 4, 16);
+}
+
+function resolveDeviceMemory(fp: FingerprintConfig, seed: string, isMobile: boolean): number {
+  const mobileOpts = [2, 4, 6, 8];
+  const desktopOpts = [4, 8, 16];
+  if (fp.deviceMemory != null) {
+    return isMobile
+      ? Math.min(8, Math.max(2, fp.deviceMemory))
+      : Math.min(16, Math.max(4, fp.deviceMemory));
+  }
+  return isMobile
+    ? mobileOpts[seedInt(`${seed}:mem`, 0, mobileOpts.length - 1)]
+    : desktopOpts[seedInt(`${seed}:mem`, 0, desktopOpts.length - 1)];
 }
 
 function resolvePlatform(fp: FingerprintConfig): string {
@@ -117,8 +146,8 @@ export function buildCanonicalFingerprint(
     innerH: fp.windowHeight,
     dpr: fp.devicePixelRatio ?? (isMobile ? 3 : 1),
     platform: resolvePlatform(fp),
-    hwConcurrency: fp.hardwareConcurrency ?? seedInt(`${seed}:hw`, 4, 16),
-    deviceMemory: fp.deviceMemory ?? [4, 8, 16][seedInt(`${seed}:mem`, 0, 2)],
+    hwConcurrency: resolveHwConcurrency(fp, seed, isMobile),
+    deviceMemory: resolveDeviceMemory(fp, seed, isMobile),
     maxTouchPoints: fp.touchPoints ?? (isMobile ? 5 : 0),
     isMobile,
     doNotTrack: fp.doNotTrack === '1' ? '1' : null,
@@ -159,6 +188,13 @@ export function buildCanonicalFingerprint(
     macValue: fp.macValue ?? '00-00-00-00-00-00',
     deviceNameValue: fp.deviceNameValue ?? 'DESKTOP-PC',
     proxyIp,
+    audioSampleRate: seedInt(`${seed}:sr`, 0, 1) === 0 ? 44100 : 48000,
+    webRtcProtect: fp.webRTC === '2' || fp.webRTC === '3',
+    webRtcBlock: fp.webRTC === '3',
+    notificationPermission: 'default',
+    availLeft: 0,
+    availTop: 0,
+    screenOrientation: isMobile ? 'portrait-primary' : 'landscape-primary',
   };
 }
 

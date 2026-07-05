@@ -127,6 +127,21 @@ export async function validateFingerprintQuick(page: Page): Promise<ValidationRe
     detail: workerResult.noOwnUa ? 'userAgent on prototype only' : 'own userAgent on navigator instance',
   });
 
+  const getterNative = await page.evaluate(() => {
+    try {
+      var d = Object.getOwnPropertyDescriptor(Navigator.prototype, 'userAgent');
+      return d && d.get ? /\\[native code\\]/.test(d.get.toString()) : false;
+    } catch {
+      return false;
+    }
+  }).catch(() => false);
+
+  checks.push({
+    name: 'getter_native_mask',
+    pass: getterNative,
+    detail: getterNative ? 'Navigator.prototype.userAgent getter masked' : 'getter toString exposes JS source',
+  });
+
   const nativeMask = await page.evaluate(() => {
     try {
       return /\\[native code\\]/.test(HTMLCanvasElement.prototype.toDataURL.toString());
@@ -139,6 +154,40 @@ export async function validateFingerprintQuick(page: Page): Promise<ValidationRe
     name: 'fn_native_mask',
     pass: nativeMask,
     detail: nativeMask ? 'toDataURL masked' : 'toDataURL hook exposed',
+  });
+
+  const workerCtorMask = await page.evaluate(() => {
+    try {
+      return typeof Worker !== 'undefined'
+        && Worker.name === 'Worker'
+        && /\\[native code\\]/.test(Function.prototype.toString.call(Worker));
+    } catch {
+      return false;
+    }
+  }).catch(() => false);
+
+  checks.push({
+    name: 'worker_ctor_mask',
+    pass: workerCtorMask,
+    detail: workerCtorMask ? 'Worker.name/toString masked' : 'Worker constructor exposes JS wrapper',
+  });
+
+  const domRectList = await page.evaluate(() => {
+    try {
+      var el = document.createElement('div');
+      document.body.appendChild(el);
+      var rects = el.getClientRects();
+      document.body.removeChild(el);
+      return rects instanceof DOMRectList;
+    } catch {
+      return false;
+    }
+  }).catch(() => false);
+
+  checks.push({
+    name: 'dom_rect_list',
+    pass: domRectList,
+    detail: domRectList ? 'getClientRects returns DOMRectList' : 'getClientRects returned plain Array',
   });
 
   const canvasCrossPath = await page.evaluate(() => {
