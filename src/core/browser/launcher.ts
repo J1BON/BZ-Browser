@@ -101,8 +101,10 @@ export class BrowserLauncher {
       const activeProxy = proxyOverride ?? profile.proxy;
       const fp = profile.fingerprint;
       const isMobile = fp.formFactor === 'mobile';
+      // Seed headers with the SAME fingerprintId used by the injected JS so
+      // Client Hints match between the network layer and navigator.userAgentData.
       const extraHeaders = {
-        ...buildExtraHeaders(fp),
+        ...buildExtraHeaders(fp, profile.fingerprintId),
         'User-Agent': fp.userAgent,
       };
 
