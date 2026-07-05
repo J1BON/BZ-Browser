@@ -31,29 +31,6 @@ export function buildInjectionRuntimeScript(fpJson: string, options: RuntimeOpti
 
   ${scopeHooks}
 
-  if (navigator.userAgentData) {
-    try {
-      var brands = FP.uaBrands.map(function(b) { return { brand: b.brand, version: b.version }; });
-      var uadObj = {
-        brands: brands,
-        mobile: FP.uaMobile,
-        platform: FP.uaPlatform,
-        getHighEntropyValues: function(hints) {
-          var result = { brands: brands, mobile: FP.uaMobile, platform: FP.uaPlatform };
-          if (hints.indexOf('architecture') >= 0) result.architecture = FP.architecture;
-          if (hints.indexOf('bitness') >= 0) result.bitness = FP.bitness;
-          if (hints.indexOf('model') >= 0) result.model = FP.model;
-          if (hints.indexOf('platformVersion') >= 0) result.platformVersion = FP.platformVersion;
-          if (hints.indexOf('uaFullVersion') >= 0) result.uaFullVersion = FP.uaFullVersion;
-          if (hints.indexOf('fullVersionList') >= 0) result.fullVersionList = FP.fullVersionList;
-          return Promise.resolve(result);
-        },
-        toJSON: function() { return { brands: brands, mobile: FP.uaMobile, platform: FP.uaPlatform }; },
-      };
-      defineProtoGetter(Navigator.prototype, 'userAgentData', function() { return uadObj; });
-    } catch(e) {}
-  }
-
   var availOff = FP.availHeightOffset || 40;
   defineProtoGetter(Screen.prototype, 'width', function() { return FP.w; });
   defineProtoGetter(Screen.prototype, 'availWidth', function() { return FP.w; });
@@ -144,16 +121,20 @@ export function buildInjectionRuntimeScript(fpJson: string, options: RuntimeOpti
     }
     Element.prototype.getBoundingClientRect = maskNative(function() {
       var r = origGCBR.call(this);
-      var n = (detUnit('r:' + (this.tagName || '')) - 0.5) * 0.00001;
-      return new DOMRect(r.x + n, r.y + n, r.width, r.height);
+      var tag = this.tagName || '';
+      var n = (detUnit('r:' + tag) - 0.5) * 0.00001;
+      var wn = (detUnit('rw:' + tag) - 0.5) * 0.00001;
+      return new DOMRect(r.x + n, r.y + n, r.width + wn, r.height + wn);
     }, 'getBoundingClientRect');
     Element.prototype.getClientRects = maskNative(function() {
       var rects = origGCR.call(this);
-      var n = (detUnit('rc:' + (this.tagName || '')) - 0.5) * 0.00001;
+      var tag = this.tagName || '';
+      var n = (detUnit('rc:' + tag) - 0.5) * 0.00001;
+      var wn = (detUnit('rcw:' + tag) - 0.5) * 0.00001;
       var out = [];
       for (var i = 0; i < rects.length; i++) {
         var r = rects[i];
-        out.push(new DOMRect(r.x + n, r.y + n, r.width, r.height));
+        out.push(new DOMRect(r.x + n, r.y + n, r.width + wn, r.height + wn));
       }
       return toDOMRectList(out);
     }, 'getClientRects');
@@ -242,6 +223,21 @@ export function buildInjectionRuntimeScript(fpJson: string, options: RuntimeOpti
       }
       return candidate;
     }
+    function scrubStatsReport(report) {
+      if (!report || !report.forEach) return report;
+      report.forEach(function(s) {
+        if (s.type === 'local-candidate' || s.type === 'remote-candidate' || s.type === 'candidate-pair') {
+          var addr = s.address || s.ip;
+          var ctype = s.candidateType;
+          if (ctype === 'host' && isLocalIp(addr)) { report.delete(s.id); return; }
+          if (ctype === 'srflx' && proxyIp && addr && addr !== proxyIp) {
+            if (s.address) s.address = proxyIp;
+            if (s.ip) s.ip = proxyIp;
+          }
+        }
+      });
+      return report;
+    }
     function wrapIceListener(listener) {
       return function(ev) {
         if (!ev.candidate) { listener(ev); return; }
@@ -279,9 +275,18 @@ export function buildInjectionRuntimeScript(fpJson: string, options: RuntimeOpti
           });
         }
       } catch(e) {}
+      var origGetStats = pc.getStats.bind(pc);
+      pc.getStats = maskNative(function() {
+        return origGetStats.apply(pc, arguments).then(function(report) {
+          return scrubStatsReport(report);
+        });
+      }, 'getStats');
       return pc;
     }, 'RTCPeerConnection');
     WrappedPC.prototype = OrigPC.prototype;
+    try { Object.setPrototypeOf(WrappedPC, OrigPC); } catch(e) {}
+    if (OrigPC.generateCertificate) WrappedPC.generateCertificate = OrigPC.generateCertificate.bind(OrigPC);
+    if (OrigPC.getDefaultIceServers) WrappedPC.getDefaultIceServers = OrigPC.getDefaultIceServers.bind(OrigPC);
     try {
       Object.defineProperty(globalThis, 'RTCPeerConnection', { value: WrappedPC, writable: true, configurable: true });
     } catch(e) {

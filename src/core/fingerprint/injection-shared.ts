@@ -73,6 +73,30 @@ export function buildScopeHooksBody(): string {
   function patchNavigator() {
     patchNavigatorProto(typeof Navigator !== 'undefined' ? Navigator.prototype : null);
     patchNavigatorProto(typeof WorkerNavigator !== 'undefined' ? WorkerNavigator.prototype : null);
+    patchUserAgentData();
+  }
+
+  function patchUserAgentData() {
+    if (typeof navigator === 'undefined' || !navigator.userAgentData) return;
+    var brands = FP.uaBrands.map(function(b) { return { brand: b.brand, version: b.version }; });
+    var uadObj = {
+      brands: brands,
+      mobile: FP.uaMobile,
+      platform: FP.uaPlatform,
+      getHighEntropyValues: function(hints) {
+        var result = { brands: brands, mobile: FP.uaMobile, platform: FP.uaPlatform };
+        if (hints.indexOf('architecture') >= 0) result.architecture = FP.architecture;
+        if (hints.indexOf('bitness') >= 0) result.bitness = FP.bitness;
+        if (hints.indexOf('model') >= 0) result.model = FP.model;
+        if (hints.indexOf('platformVersion') >= 0) result.platformVersion = FP.platformVersion;
+        if (hints.indexOf('uaFullVersion') >= 0) result.uaFullVersion = FP.uaFullVersion;
+        if (hints.indexOf('fullVersionList') >= 0) result.fullVersionList = FP.fullVersionList;
+        return Promise.resolve(result);
+      },
+      toJSON: function() { return { brands: brands, mobile: FP.uaMobile, platform: FP.uaPlatform }; },
+    };
+    defineProtoGetter(typeof Navigator !== 'undefined' ? Navigator.prototype : null, 'userAgentData', function() { return uadObj; });
+    defineProtoGetter(typeof WorkerNavigator !== 'undefined' ? WorkerNavigator.prototype : null, 'userAgentData', function() { return uadObj; });
   }
 
   function buildPluginArray() {
@@ -123,7 +147,12 @@ export function buildScopeHooksBody(): string {
     var origGetParam = proto.getParameter;
     var origGetExt = proto.getExtension;
     var origReadPixels = proto.readPixels;
+    var origGetSupportedExtensions = proto.getSupportedExtensions;
+    var origGetShaderPrecisionFormat = proto.getShaderPrecisionFormat;
+    var origGetContextAttributes = proto.getContextAttributes;
     var webglParams = FP.webglParams || {};
+    var webglExtensions = FP.webglExtensions || [];
+    var shaderPrecision = FP.webglShaderPrecision || [];
     proto.getParameter = function(p) {
       if (FP.webGlMetaSpoof) {
         if (p === 37445) return FP.webglVendor;
@@ -133,7 +162,30 @@ export function buildScopeHooksBody(): string {
       return origGetParam.call(this, p);
     };
     proto.getExtension = function(name) {
+      if (FP.webGlMetaSpoof && webglExtensions.indexOf(name) < 0) return null;
       return origGetExt.call(this, name);
+    };
+    proto.getSupportedExtensions = function() {
+      if (FP.webGlMetaSpoof && webglExtensions.length) return webglExtensions.slice();
+      return origGetSupportedExtensions.call(this);
+    };
+    proto.getShaderPrecisionFormat = function(shaderType, precisionType) {
+      if (FP.webGlMetaSpoof && shaderPrecision.length) {
+        for (var i = 0; i < shaderPrecision.length; i++) {
+          var sp = shaderPrecision[i];
+          if (sp.shaderType === shaderType && sp.precisionType === precisionType) {
+            return { rangeMin: sp.rangeMin, rangeMax: sp.rangeMax, precision: sp.precision };
+          }
+        }
+      }
+      return origGetShaderPrecisionFormat.call(this, shaderType, precisionType);
+    };
+    proto.getContextAttributes = function() {
+      var attrs = origGetContextAttributes.call(this);
+      if (FP.webGlMetaSpoof && attrs) {
+        return Object.assign({}, attrs, { antialias: true, alpha: true, depth: true, stencil: false, premultipliedAlpha: true });
+      }
+      return attrs;
     };
     if (FP.webGlImageNoise) {
       proto.readPixels = function(x, y, w, h, fmt, type, pixels) {
@@ -194,7 +246,12 @@ export function buildScopeHooksBody(): string {
 
   function patchAudioNoise() {
     var sampleRate = FP.audioSampleRate || 44100;
-    function noiseArray(arr, prefix) {
+    var _noisedArrays = typeof WeakSet !== 'undefined' ? new WeakSet() : null;
+    function noiseArrayOnce(arr, prefix) {
+      if (_noisedArrays) {
+        if (_noisedArrays.has(arr)) return;
+        _noisedArrays.add(arr);
+      }
       for (var i = 0; i < arr.length; i++) arr[i] += (detUnit(prefix + ':' + i) - 0.5) * 0.0001;
     }
     function patchAnalyser(analyser) {
@@ -205,7 +262,7 @@ export function buildScopeHooksBody(): string {
           var orig = analyser[method].bind(analyser);
           analyser[method] = maskNative(function(arr) {
             orig(arr);
-            noiseArray(arr, 'a:' + method);
+            noiseArrayOnce(arr, 'a:' + method);
           }, method);
         })(methods[m]);
       }
@@ -215,8 +272,17 @@ export function buildScopeHooksBody(): string {
       var origGetChannel = AudioBuffer.prototype.getChannelData;
       AudioBuffer.prototype.getChannelData = maskNative(function(channel) {
         var data = origGetChannel.call(this, channel);
-        for (var i = 0; i < data.length; i += 100) {
-          data[i] += (detUnit('ab:' + channel + ':' + i) - 0.5) * 1e-7;
+        if (_noisedArrays) {
+          if (!_noisedArrays.has(data)) {
+            for (var i = 0; i < data.length; i += 100) {
+              data[i] += (detUnit('ab:' + channel + ':' + i) - 0.5) * 1e-7;
+            }
+            _noisedArrays.add(data);
+          }
+        } else {
+          for (var j = 0; j < data.length; j += 100) {
+            data[j] += (detUnit('ab:' + channel + ':' + j) - 0.5) * 1e-7;
+          }
         }
         return data;
       }, 'getChannelData');
@@ -253,6 +319,33 @@ export function buildScopeHooksBody(): string {
         });
       }, 'startRendering');
     }
+  }
+
+  function wrapTextMetrics(metrics, text, fontKey) {
+    var wNoise = (detUnit('mtw:' + text + ':' + fontKey) - 0.5) * 0.0001;
+    return {
+      width: metrics.width + wNoise,
+      actualBoundingBoxLeft: metrics.actualBoundingBoxLeft,
+      actualBoundingBoxRight: metrics.actualBoundingBoxRight,
+      actualBoundingBoxAscent: metrics.actualBoundingBoxAscent,
+      actualBoundingBoxDescent: metrics.actualBoundingBoxDescent,
+      fontBoundingBoxAscent: metrics.fontBoundingBoxAscent,
+      fontBoundingBoxDescent: metrics.fontBoundingBoxDescent,
+      emHeightAscent: metrics.emHeightAscent,
+      emHeightDescent: metrics.emHeightDescent,
+      hangingBaseline: metrics.hangingBaseline,
+      alphabeticBaseline: metrics.alphabeticBaseline,
+      ideographicBaseline: metrics.ideographicBaseline,
+    };
+  }
+
+  function patchTextMetricsNoise() {
+    if (!FP.clientRectsNoise) return;
+    var origMeasureText = CanvasRenderingContext2D.prototype.measureText;
+    CanvasRenderingContext2D.prototype.measureText = maskNative(function(text) {
+      var r = origMeasureText.call(this, text);
+      return wrapTextMetrics(r, text, this.font || '');
+    }, 'measureText');
   }
 
   function patchFontSpoof() {
@@ -293,7 +386,7 @@ export function buildScopeHooksBody(): string {
       if (remapped !== saved) this.font = remapped;
       var r = origMeasureText.call(this, text);
       if (remapped !== saved) this.font = saved;
-      return r;
+      return FP.clientRectsNoise ? wrapTextMetrics(r, text, saved || '') : r;
     }, 'measureText');
     if (typeof document !== 'undefined' && document.fonts && document.fonts.check) {
       var origCheck = document.fonts.check.bind(document.fonts);
@@ -333,6 +426,7 @@ export function buildScopeHooksBody(): string {
   if (FP.canvasNoise) patchCanvasNoise();
   if (FP.audioNoise) patchAudioNoise();
   if (FP.fontSpoof) patchFontSpoof();
+  else if (FP.clientRectsNoise) patchTextMetricsNoise();
   try {
     hookWebGL(WebGLRenderingContext.prototype);
     if (typeof WebGL2RenderingContext !== 'undefined') hookWebGL(WebGL2RenderingContext.prototype);

@@ -35,6 +35,8 @@ export interface CanonicalFingerprint {
   webglVendor: string;
   webglRenderer: string;
   webglParams: Record<number, number | string | boolean>;
+  webglExtensions: string[];
+  webglShaderPrecision: { shaderType: number; precisionType: number; rangeMin: number; rangeMax: number; precision: number }[];
   webgpuVendor: string;
   webgpuArchitecture: string;
   canvasNoise: boolean;
@@ -163,6 +165,8 @@ export function buildCanonicalFingerprint(
     webglVendor,
     webglRenderer,
     webglParams: webglProfile.params,
+    webglExtensions: webglProfile.extensions,
+    webglShaderPrecision: webglProfile.shaderPrecision,
     webgpuVendor: fp.webGPUVendor ?? webglProfile.webgpuVendor,
     webgpuArchitecture: fp.webGPUArchitecture ?? webglProfile.webgpuArchitecture,
     canvasNoise: fp.canvas === '2',

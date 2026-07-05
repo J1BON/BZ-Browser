@@ -62,6 +62,51 @@ function countryCodeToLanguages(code: string): string[] {
   return map[code.toUpperCase()] ?? ['en-US', 'en'];
 }
 
+const TZ_ALIASES: Record<string, string> = {
+  'Asia/Calcutta': 'Asia/Kolkata',
+  'Asia/Saigon': 'Asia/Ho_Chi_Minh',
+  'Asia/Katmandu': 'Asia/Kathmandu',
+  'Europe/Kiev': 'Europe/Kyiv',
+  'America/Godthab': 'America/Nuuk',
+};
+
+function canonicalTimezone(tz: string): string {
+  return TZ_ALIASES[tz] ?? tz;
+}
+
+function timezoneOffsetMinutes(tz: string): number | null {
+  try {
+    const now = new Date();
+    const fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      timeZoneName: 'shortOffset',
+    });
+    const part = fmt.formatToParts(now).find((p) => p.type === 'timeZoneName')?.value ?? '';
+    const m = part.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/);
+    if (!m) return 0;
+    const sign = m[1] === '-' ? -1 : 1;
+    const hours = Number(m[2]);
+    const mins = Number(m[3] ?? 0);
+    return sign * (hours * 60 + mins);
+  } catch {
+    return null;
+  }
+}
+
+function timezonesMatch(a: string, b: string): boolean {
+  const ca = canonicalTimezone(a);
+  const cb = canonicalTimezone(b);
+  if (ca === cb) return true;
+  const offA = timezoneOffsetMinutes(ca);
+  const offB = timezoneOffsetMinutes(cb);
+  return offA != null && offB != null && offA === offB;
+}
+
+function inferCountryFromLang(lang: string): string | null {
+  const m = lang.match(/-([A-Z]{2})$/i);
+  return m ? m[1].toUpperCase() : null;
+}
+
 export interface ProxyGeoValidation {
   ok: boolean;
   error?: string;
@@ -78,20 +123,33 @@ export async function validateProxyGeoAlignment(
   if (!proxy.ip) {
     return {
       ok: true,
-      warning: 'Proxy exit IP unknown — run proxy health check to align timezone/geo before launch.',
+      warning: 'Proxy exit IP unknown — timezone/country alignment unverified. Run proxy health check before relying on geo consistency.',
     };
   }
 
   const geo = await lookupGeoFromIp(proxy.ip);
   if (!geo) {
-    return { ok: true, warning: `Could not resolve geo for proxy IP ${proxy.ip}` };
+    return {
+      ok: true,
+      warning: `Could not resolve geo for proxy IP ${proxy.ip} — timezone/country alignment unverified.`,
+    };
   }
 
   const tz = profile.fingerprint.timeZone;
-  if (geo.timezone !== tz) {
+  if (!timezonesMatch(geo.timezone, tz)) {
     return {
       ok: false,
-      error: `Profile timezone "${tz}" does not match proxy exit "${geo.timezone}" (${geo.country}/${geo.city}). Re-run proxy health check to auto-align.`,
+      error: `Profile timezone "${tz}" does not match proxy exit offset (${geo.timezone}, ${geo.country}/${geo.city}). Re-run proxy health check to auto-align.`,
+    };
+  }
+
+  const expectedCountry = (proxy.country && /^[A-Za-z]{2}$/.test(proxy.country.trim())
+    ? proxy.country.trim().toUpperCase()
+    : inferCountryFromLang(profile.fingerprint.screenLang));
+  if (expectedCountry && geo.countryCode && geo.countryCode.toUpperCase() !== expectedCountry) {
+    return {
+      ok: false,
+      error: `Profile country "${expectedCountry}" does not match proxy exit "${geo.countryCode}" (${geo.country}). Update proxy or regenerate profile geo.`,
     };
   }
 
