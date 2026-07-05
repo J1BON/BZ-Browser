@@ -202,10 +202,11 @@ export function buildLaunchArgs(profile: BrowserProfile, fingerprintId?: string)
     fp.browserVersion,
   ));
 
-  if (fp.webRTC === '2') {
-    args.push('--force-webrtc-ip-handling-policy=disable_non_proxied_udp');
-  } else if (fp.webRTC === '3') {
-    args.push('--webrtc-ip-handling-policy=disable_non_proxied_udp');
+  if (fp.webRTC === '2' || fp.webRTC === '3') {
+    args.push(
+      '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+      '--enforce-webrtc-ip-permission-check',
+    );
   }
 
   if (profile.headless) {
@@ -247,7 +248,7 @@ export function buildExtraHeaders(fp: FingerprintConfig, seed?: string): Record<
 
   const identity = buildDeviceIdentity(fp, seed ?? 'headers');
   const fullList = identity.fullVersionList
-    .map((b) => `"${b.brand}";v="${b.version.split('.')[0]}"`)
+    .map((b) => `"${b.brand}";v="${b.version}"`)
     .join(', ');
 
   return {
@@ -255,6 +256,7 @@ export function buildExtraHeaders(fp: FingerprintConfig, seed?: string): Record<
     'Sec-CH-UA': brandHeader,
     'Sec-CH-UA-Mobile': isMobile ? '?1' : '?0',
     'Sec-CH-UA-Platform': platformHeader,
+    'Sec-CH-UA-Full-Version': `"${identity.uaFullVersion}"`,
     'Sec-CH-UA-Full-Version-List': fullList,
     'Sec-CH-UA-Platform-Version': `"${identity.platformVersion}"`,
     'Sec-CH-UA-Arch': `"${identity.architecture}"`,

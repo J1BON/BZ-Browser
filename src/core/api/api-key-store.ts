@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { createHash, randomBytes } from 'crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 
 export interface ApiKeyEntry {
   id: string;
@@ -55,12 +55,19 @@ export class ApiKeyStore {
 
   validate(rawKey: string): ApiKeyEntry | null {
     const hash = this.hashKey(rawKey);
-    const entry = this.keys.find((k) => k.keyHash === hash);
-    if (entry) {
-      entry.lastUsed = Date.now();
+    let matched: ApiKeyEntry | null = null;
+    for (const entry of this.keys) {
+      const a = Buffer.from(entry.keyHash, 'hex');
+      const b = Buffer.from(hash, 'hex');
+      if (a.length === b.length && timingSafeEqual(a, b)) {
+        matched = entry;
+      }
+    }
+    if (matched) {
+      matched.lastUsed = Date.now();
       void this.save();
     }
-    return entry ?? null;
+    return matched;
   }
 
   list(): Omit<ApiKeyEntry, 'keyHash'>[] {

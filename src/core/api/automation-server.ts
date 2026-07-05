@@ -77,21 +77,17 @@ export class AutomationServer {
   }
 
   private authRequired(): boolean {
-    return this.apiKeys.list().length > 0;
+    return true;
   }
 
   private checkAuth(req: http.IncomingMessage): boolean {
-    if (!this.authRequired()) return true;
+    if (this.apiKeys.list().length === 0) return false;
     const header = req.headers.authorization ?? '';
     const token = header.startsWith('Bearer ') ? header.slice(7) : '';
     return token.length > 0 && this.apiKeys.validate(token) !== null;
   }
 
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
       res.end();
@@ -99,7 +95,12 @@ export class AutomationServer {
     }
 
     if (!this.checkAuth(req)) {
-      return json(res, 401, { error: 'Unauthorized — set Authorization: Bearer cab_...' });
+      const hasKeys = this.apiKeys.list().length > 0;
+      return json(res, 401, {
+        error: hasKeys
+          ? 'Unauthorized — set Authorization: Bearer cab_...'
+          : 'No API keys configured — create one in Settings before using the REST API',
+      });
     }
 
     const url = new URL(req.url ?? '/', `http://127.0.0.1:${this.port}`);

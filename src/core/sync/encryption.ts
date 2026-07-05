@@ -7,7 +7,7 @@ const AUTH_TAG_LENGTH = 16;
 const KEY_LENGTH = 32;
 
 export function deriveKey(passphrase: string, salt: Buffer): Buffer {
-  return scryptSync(passphrase, salt, KEY_LENGTH);
+  return scryptSync(passphrase, salt, KEY_LENGTH, { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
 }
 
 export function encryptBuffer(data: Buffer, passphrase: string): Buffer {

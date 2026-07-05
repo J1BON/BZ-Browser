@@ -86,12 +86,18 @@ export function buildTlsLaunchArgs(
     return [`--fingerprint-seed=${fingerprintId.replace(/-/g, '').slice(0, 16)}`];
   }
   const major = browserVersion.split('.')[0] ?? tls.chromeMajor;
-  const seed = fingerprintId.replace(/-/g, '').slice(0, 16);
+  const seedHex = fingerprintId.replace(/-/g, '').slice(0, 16);
+  let fpInt = 2166136261;
+  const mix = `${seedHex}:${tls.id}`;
+  for (let i = 0; i < mix.length; i++) {
+    fpInt ^= mix.charCodeAt(i);
+    fpInt = Math.imul(fpInt, 16777619);
+  }
+  const fingerprintInt = (fpInt >>> 0) % 2_147_483_646 + 1;
   return [
     ...tls.args,
-    `--fingerprint-seed=${seed}`,
+    `--fingerprint-seed=${seedHex}`,
+    `--fingerprint=${fingerprintInt}`,
     `--user-agent-product=Chrome/${major}`,
-    // Patched fingerprint-chromium reads JA3 from this flag when available
-    `--fingerprint=${tls.ja3Hint}`,
   ];
 }

@@ -16,121 +16,118 @@ export interface ValidationReport {
   selfReferential: boolean;
 }
 
-const VALIDATION_SCRIPT = `
-(() => {
-  const checks = [];
-  function add(name, pass, detail) { checks.push({ name, pass, detail: String(detail ?? '') }); }
-
-  add('webdriver_hidden', navigator.webdriver !== true, 'webdriver=' + navigator.webdriver);
-  add('no_playwright', !window.__playwright && !window.__pw_manual, 'playwright artifacts');
-  add('no_fake_chrome_runtime', !(window.chrome && window.chrome.runtime), 'chrome.runtime should be absent on normal pages');
-  add('languages', navigator.languages && navigator.languages.length >= 1, navigator.languages?.join(','));
-  add('platform', !!navigator.platform, navigator.platform);
-  add('plugins_count', navigator.plugins && navigator.plugins.length >= 5, String(navigator.plugins?.length ?? 0));
-  add('cpu', (navigator.hardwareConcurrency ?? 0) >= 2, String(navigator.hardwareConcurrency));
-  add('memory', (navigator.deviceMemory ?? 0) >= 2, String(navigator.deviceMemory ?? 'n/a'));
-  add('webrtc_present', typeof RTCPeerConnection === 'function', 'RTCPeerConnection');
-  add('screen', screen.width > 0 && screen.height > 0, screen.width + 'x' + screen.height);
-  add('viewport', window.innerWidth > 0 && window.innerHeight > 0, window.innerWidth + 'x' + window.innerHeight);
-  add('dpr', window.devicePixelRatio >= 1, String(window.devicePixelRatio));
-  add('timezone', !!Intl.DateTimeFormat().resolvedOptions().timeZone, Intl.DateTimeFormat().resolvedOptions().timeZone);
-  add('dnt_null', navigator.doNotTrack === null || navigator.doNotTrack === 'unspecified', String(navigator.doNotTrack));
-
-  try {
-    var tdStr = HTMLCanvasElement.prototype.toDataURL.toString();
-    add('fn_native_mask', /\\[native code\\]/.test(tdStr), tdStr.slice(0, 48));
-  } catch (e) {
-    add('fn_native_mask', false, e.message);
-  }
-
-  if (navigator.userAgentData) {
-    const uad = navigator.userAgentData;
-    add('uad_platform', !!uad.platform, uad.platform);
-    add('uad_mobile', uad.mobile === (navigator.maxTouchPoints > 0), 'mobile=' + uad.mobile);
-    add('uad_brands', uad.brands && uad.brands.length > 0, uad.brands?.map(b => b.brand).join(','));
-  } else {
-    add('uad_present', false, 'missing userAgentData');
-  }
-
-  try {
-    const canvas = document.createElement('canvas');
-    canvas.width = 220; canvas.height = 60;
-    const ctx = canvas.getContext('2d');
-    ctx.textBaseline = 'top';
-    ctx.font = '16px Arial';
-    ctx.fillText('antidetect-probe', 4, 8);
-    const d1 = canvas.toDataURL();
-    const d2 = canvas.toDataURL();
-    add('canvas_stable', d1 === d2, d1.slice(-16) + ' vs ' + d2.slice(-16));
-    const img1 = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const img2 = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    var same = img1.data.length === img2.data.length;
-    if (same) {
-      for (var i = 0; i < Math.min(img1.data.length, 400); i++) {
-        if (img1.data[i] !== img2.data[i]) { same = false; break; }
-      }
+const WORKER_CONSISTENCY_SCRIPT = `
+(async () => {
+  const mainUa = navigator.userAgent;
+  const mainPlatform = navigator.platform;
+  const workerUa = await new Promise((resolve, reject) => {
+    try {
+      const code = 'postMessage({ ua: navigator.userAgent, platform: navigator.platform })';
+      const blob = new Blob([code], { type: 'application/javascript' });
+      const w = new Worker(URL.createObjectURL(blob));
+      w.onmessage = (e) => { w.terminate(); resolve(e.data); };
+      w.onerror = (e) => { w.terminate(); reject(e.message); };
+      setTimeout(() => { w.terminate(); reject('timeout'); }, 5000);
+    } catch (e) {
+      reject(String(e));
     }
-    add('canvas_read_stable', same, String(img1.data.length));
-  } catch (e) {
-    add('canvas', false, e.message);
-  }
-
-  try {
-    const canvas = document.createElement('canvas');
-    const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
-    if (gl) {
-      const dbg = gl.getExtension('WEBGL_debug_renderer_info');
-      const vendor = dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : gl.getParameter(7936);
-      const renderer = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(7937);
-      add('webgl_vendor', !!vendor && /NVIDIA|AMD|Intel|Apple|ANGLE|Mesa/i.test(String(vendor)), String(vendor).slice(0, 60));
-      add('webgl_renderer', !!renderer, String(renderer).slice(0, 80));
-    } else add('webgl', false, 'no context');
-  } catch (e) {
-    add('webgl', false, e.message);
-  }
-
-  try {
-    const AC = window.AudioContext || window.webkitAudioContext;
-    if (AC) {
-      const ctx = new AC();
-      const analyser = ctx.createAnalyser();
-      add('audio_context', !!analyser, 'ok');
-      ctx.close();
-    } else add('audio_context', false, 'missing');
-  } catch (e) {
-    add('audio_context', false, e.message);
-  }
-
-  if (window.speechSynthesis) {
-    const voices = speechSynthesis.getVoices();
-    add('speech_voices', voices.length >= 1, String(voices.length));
-  }
-
-  return checks;
+  });
+  return {
+    uaMatch: workerUa.ua === mainUa,
+    platformMatch: workerUa.platform === mainPlatform,
+    workerUa: workerUa.ua,
+    mainUa,
+  };
 })();
 `;
 
+/** Diagnostic smoke checks — not a detection score. Use external-validator for real gating. */
 export async function validateFingerprint(page: Page): Promise<ValidationReport> {
   await page.goto('about:blank').catch(() => {});
 
-  const checks = await page.evaluate(VALIDATION_SCRIPT) as ValidationCheck[];
+  const checks: ValidationCheck[] = [
+    {
+      name: 'diagnostic_only',
+      pass: true,
+      detail: 'Local checks verify injection wiring only — run external validation for CreepJS/pixelscan scores',
+    },
+  ];
 
-  const mediaCheck = await page.evaluate(async () => {
-    if (!navigator.mediaDevices?.enumerateDevices) return { name: 'media_devices', pass: false, detail: 'missing' };
-    const devs = await navigator.mediaDevices.enumerateDevices();
-    return { name: 'media_devices', pass: devs.length >= 3, detail: devs.length + ' devices' };
-  }).catch(() => ({ name: 'media_devices', pass: false, detail: 'error' }));
+  return {
+    score: 0,
+    passed: 0,
+    total: 1,
+    checks,
+    timestamp: Date.now(),
+    selfReferential: true,
+  };
+}
 
-  const allChecks = [...checks, mediaCheck];
-  const passed = allChecks.filter((c) => c.pass).length;
-  const total = allChecks.length || 1;
+/** Fast consistency gate: worker navigator match + native toString mask. Used at launch. */
+export async function validateFingerprintQuick(page: Page): Promise<ValidationReport> {
+  await page.goto('about:blank').catch(() => {});
+
+  const checks: ValidationCheck[] = [];
+
+  const workerResult = await page.evaluate(WORKER_CONSISTENCY_SCRIPT).catch(
+    (err: Error) => ({ uaMatch: false, platformMatch: false, workerUa: '', mainUa: '', error: err.message }),
+  ) as { uaMatch: boolean; platformMatch: boolean; workerUa: string; mainUa: string; error?: string };
+
+  checks.push({
+    name: 'worker_ua_match',
+    pass: workerResult.uaMatch === true,
+    detail: workerResult.error
+      ? `worker error: ${workerResult.error}`
+      : `main=${workerResult.mainUa?.slice(0, 40)} worker=${workerResult.workerUa?.slice(0, 40)}`,
+  });
+  checks.push({
+    name: 'worker_platform_match',
+    pass: workerResult.platformMatch === true,
+    detail: workerResult.platformMatch ? 'ok' : 'worker platform mismatch',
+  });
+
+  const nativeMask = await page.evaluate(() => {
+    try {
+      return /\\[native code\\]/.test(HTMLCanvasElement.prototype.toDataURL.toString());
+    } catch {
+      return false;
+    }
+  }).catch(() => false);
+
+  checks.push({
+    name: 'fn_native_mask',
+    pass: nativeMask,
+    detail: nativeMask ? 'toDataURL masked' : 'toDataURL hook exposed',
+  });
+
+  const canvasStable = await page.evaluate(() => {
+    try {
+      const c = document.createElement('canvas');
+      c.width = 64; c.height = 64;
+      const ctx = c.getContext('2d');
+      if (!ctx) return false;
+      ctx.fillRect(0, 0, 64, 64);
+      return c.toDataURL() === c.toDataURL();
+    } catch {
+      return false;
+    }
+  }).catch(() => false);
+
+  checks.push({
+    name: 'canvas_stable',
+    pass: canvasStable,
+    detail: canvasStable ? 'stable reads' : 'canvas mismatch across reads',
+  });
+
+  const passed = checks.filter((c) => c.pass).length;
+  const total = checks.length;
 
   return {
     score: Math.round((passed / total) * 100),
     passed,
     total,
-    checks: allChecks,
+    checks,
     timestamp: Date.now(),
-    selfReferential: true,
+    selfReferential: false,
   };
 }

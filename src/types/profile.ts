@@ -158,7 +158,9 @@ export interface ValidationReport {
   timestamp: number;
   selfReferential?: boolean;
   externalScore?: number;
-  sites?: { name: string; url: string; pass: boolean; detail: string }[];
+  detectionScore?: number;
+  minEngineScore?: number;
+  sites?: { name: string; url: string; pass: boolean; detail: string; score?: number }[];
 }
 
 export interface GeoIpResult {

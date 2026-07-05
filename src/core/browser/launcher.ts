@@ -7,8 +7,8 @@ import type { CdpEndpoint } from '../../types/phase4.js';
 import type { WarmupResult } from '../../types/warmup.js';
 import { buildFingerprintScript, buildLaunchArgs, buildExtraHeaders } from '../fingerprint/injection.js';
 import { resolveChromium, getChromiumInstallHint, checkTlsReadiness, isPatchedSource } from '../fingerprint/chromium-resolver.js';
-import { validateFingerprint, type ValidationReport } from '../fingerprint/validator.js';
-import { validateFingerprintExternal } from '../fingerprint/external-validator.js';
+import { validateFingerprintQuick } from '../fingerprint/validator.js';
+import { validateFingerprintExternal, validateFingerprintQuickExternal } from '../fingerprint/external-validator.js';
 import { warmupRunner } from '../automation/warmup-runner.js';
 import { rpaRecorder } from '../automation/rpa-recorder.js';
 import { rpaPlayer } from '../automation/rpa-player.js';
@@ -24,6 +24,17 @@ import {
 const runningContexts = new Map<string, BrowserContext>();
 const cdpPorts = new Map<string, number>();
 let nextDebugPort = 9222;
+let portAllocationLock: Promise<void> = Promise.resolve();
+
+async function allocateDebugPort(): Promise<number> {
+  let port = nextDebugPort;
+  portAllocationLock = portAllocationLock.then(async () => {
+    port = await findFreePort(nextDebugPort);
+    nextDebugPort = port + 1;
+  });
+  await portAllocationLock;
+  return port;
+}
 
 function buildProxyOption(proxy: ProxyConfig) {
   if (!proxy.host || !proxy.port) return undefined;
@@ -107,8 +118,7 @@ export class BrowserLauncher {
         'User-Agent': fp.userAgent,
       };
 
-      const debugPort = await findFreePort(nextDebugPort);
-      nextDebugPort = debugPort + 1;
+      const debugPort = await allocateDebugPort();
 
       const args = [
         ...buildLaunchArgs(profile, profile.fingerprintId),
@@ -177,15 +187,15 @@ export class BrowserLauncher {
       if (profile.minFpScore > 0) {
         const page = context.pages()[0];
         if (page) {
-          const report = await validateFingerprint(page);
-          fpScore = report.score;
-          if (report.score < profile.minFpScore) {
+          const report = await validateFingerprintQuickExternal(page);
+          fpScore = report.detectionScore ?? report.score;
+          if (fpScore < profile.minFpScore) {
             await context.close();
             return {
               success: false,
               profileId: profile.id,
-              error: `Fingerprint score ${report.score}% below minimum ${profile.minFpScore}%`,
-              fpScore: report.score,
+              error: `Detection score ${fpScore}% below minimum ${profile.minFpScore}% (worker/Sannysoft gate)`,
+              fpScore,
             };
           }
         }
@@ -229,13 +239,13 @@ export class BrowserLauncher {
     return warmupRunner.run(ctx, presetId);
   }
 
-  async validate(profileId: string, external = false): Promise<ValidationReport | null> {
+  async validate(profileId: string, external = false): Promise<import('../fingerprint/external-validator.js').ExternalValidationReport | import('../fingerprint/validator.js').ValidationReport | null> {
     const ctx = runningContexts.get(profileId);
     if (!ctx) return null;
     const page = ctx.pages()[0];
     if (!page) return null;
     if (external) return validateFingerprintExternal(page);
-    return validateFingerprint(page);
+    return validateFingerprintQuick(page);
   }
 
   async startRpaRecording(profileId: string): Promise<RpaRecordingState | null> {

@@ -1,5 +1,7 @@
 /** Generates the in-page antidetect runtime (injected via addInitScript). */
 
+import { buildWorkerBridgeScript, buildWorkerInjectionScript } from './injection-worker.js';
+
 export interface RuntimeOptions {
   /** Patched Chromium handles canvas/TLS/UA natively — skip heavy JS hooks */
   useNativeKernel: boolean;
@@ -7,6 +9,8 @@ export interface RuntimeOptions {
 
 export function buildInjectionRuntimeScript(fpJson: string, options: RuntimeOptions): string {
   const nativeSkip = options.useNativeKernel ? 'true' : 'false';
+  const workerInject = buildWorkerInjectionScript(fpJson, options.useNativeKernel);
+  const workerBridge = workerInject ? buildWorkerBridgeScript(workerInject) : '';
   return `
 (function() {
   'use strict';
@@ -36,15 +40,32 @@ export function buildInjectionRuntimeScript(fpJson: string, options: RuntimeOpti
   function detBit(key) { return (detHash(key) & 1) === 1; }
   function detUnit(key) { return detHash(key) / 4294967295; }
 
-  function noiseImageData(img, ox, oy) {
-    var d = img.data, w = img.width;
-    for (var y = 0; y < img.height; y++) {
-      for (var x = 0; x < w; x++) {
-        var i = (y * w + x) * 4;
-        if (detBit('c:' + ox + ':' + oy + ':' + x + ':' + y)) d[i] ^= 1;
-      }
+  function sparseNoiseImageData(img, ox, oy) {
+    var d = img.data, w = img.width, h = img.height;
+    var n = Math.max(32, (w * h * 0.002) | 0);
+    for (var k = 0; k < n; k++) {
+      var x = detHash('sx:' + ox + ':' + oy + ':' + k) % w;
+      var y = detHash('sy:' + ox + ':' + oy + ':' + k) % h;
+      var i = (y * w + x) * 4;
+      var delta = (detHash('sd:' + i) % 3) - 1;
+      d[i] = Math.min(255, Math.max(0, d[i] + delta));
+      if (detBit('sc:' + i)) d[i + 1] = Math.min(255, Math.max(0, d[i + 1] + delta));
     }
     return img;
+  }
+
+  function withCanvasNoise(canvas, fn) {
+    var ctx = canvas.getContext('2d');
+    if (!ctx || !canvas.width || !canvas.height) return fn();
+    var origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
+    var img = origGetImageData.call(ctx, 0, 0, canvas.width, canvas.height);
+    var backup = new Uint8ClampedArray(img.data);
+    sparseNoiseImageData(img, 0, 0);
+    ctx.putImageData(img, 0, 0);
+    try { return fn(); } finally {
+      img.data.set(backup);
+      ctx.putImageData(img, 0, 0);
+    }
   }
 
   function buildPluginArray() {
@@ -148,27 +169,30 @@ export function buildInjectionRuntimeScript(fpJson: string, options: RuntimeOpti
     var origToBlob = HTMLCanvasElement.prototype.toBlob;
     var origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
     HTMLCanvasElement.prototype.toDataURL = maskNative(function() {
-      var ctx = this.getContext('2d');
-      if (ctx) {
-        var img = origGetImageData.call(ctx, 0, 0, this.width, this.height);
-        noiseImageData(img, 0, 0);
-        ctx.putImageData(img, 0, 0);
-      }
-      return origToDataURL.apply(this, arguments);
+      var self = this;
+      return withCanvasNoise(self, function() { return origToDataURL.apply(self, arguments); });
     }, 'toDataURL');
     HTMLCanvasElement.prototype.toBlob = maskNative(function() {
-      var ctx = this.getContext('2d');
-      if (ctx) {
-        var img = origGetImageData.call(ctx, 0, 0, this.width, this.height);
-        noiseImageData(img, 0, 0);
-        ctx.putImageData(img, 0, 0);
-      }
-      return origToBlob.apply(this, arguments);
+      var self = this;
+      return withCanvasNoise(self, function() { return origToBlob.apply(self, arguments); });
     }, 'toBlob');
     CanvasRenderingContext2D.prototype.getImageData = maskNative(function(sx, sy, sw, sh) {
       var img = origGetImageData.apply(this, arguments);
-      return noiseImageData(img, sx || 0, sy || 0);
+      return sparseNoiseImageData(img, sx || 0, sy || 0);
     }, 'getImageData');
+    if (typeof OffscreenCanvas !== 'undefined') {
+      var origOCGetContext = OffscreenCanvas.prototype.getContext;
+      OffscreenCanvas.prototype.getContext = maskNative(function(type, attrs) {
+        var ctx = origOCGetContext.call(this, type, attrs);
+        if (ctx && type === '2d' && FP.canvasNoise) {
+          var origGet = ctx.getImageData.bind(ctx);
+          ctx.getImageData = maskNative(function(sx, sy, sw, sh) {
+            return sparseNoiseImageData(origGet(sx, sy, sw, sh), sx || 0, sy || 0);
+          }, 'getImageData');
+        }
+        return ctx;
+      }, 'getContext');
+    }
   }
 
   if (!USE_NATIVE) {
@@ -176,6 +200,8 @@ export function buildInjectionRuntimeScript(fpJson: string, options: RuntimeOpti
       var origGetParam = proto.getParameter;
       var origGetExt = proto.getExtension;
       var origReadPixels = proto.readPixels;
+      var origGetSupportedExtensions = proto.getSupportedExtensions;
+      var origGetShaderPrecision = proto.getShaderPrecisionFormat;
       proto.getParameter = maskNative(function(p) {
         if (FP.webGlMetaSpoof) {
           if (p === 37445) return FP.webglVendor;
@@ -190,12 +216,25 @@ export function buildInjectionRuntimeScript(fpJson: string, options: RuntimeOpti
         }
         return origGetExt.call(this, name);
       }, 'getExtension');
+      if (origGetSupportedExtensions) {
+        proto.getSupportedExtensions = maskNative(function() {
+          var exts = origGetSupportedExtensions.call(this) || [];
+          return exts.filter(function(e) { return e !== 'WEBGL_debug_renderer_info'; });
+        }, 'getSupportedExtensions');
+      }
+      if (origGetShaderPrecision) {
+        proto.getShaderPrecisionFormat = maskNative(function(shaderType, precisionType) {
+          return origGetShaderPrecision.call(this, shaderType, precisionType);
+        }, 'getShaderPrecisionFormat');
+      }
       if (FP.webGlImageNoise) {
         proto.readPixels = maskNative(function(x, y, w, h, fmt, type, pixels) {
           origReadPixels.call(this, x, y, w, h, fmt, type, pixels);
           if (pixels && pixels.length) {
-            for (var i = 0; i < pixels.length; i += 4) {
-              if (detBit('g:' + x + ':' + y + ':' + i)) pixels[i] ^= 1;
+            var n = Math.max(8, (pixels.length / 16) | 0);
+            for (var k = 0; k < n; k++) {
+              var i = (detHash('g:' + x + ':' + y + ':' + k) % (pixels.length / 4)) * 4;
+              pixels[i] ^= (detHash('gp:' + i) & 1);
             }
           }
         }, 'readPixels');
@@ -205,6 +244,24 @@ export function buildInjectionRuntimeScript(fpJson: string, options: RuntimeOpti
       hookWebGL(WebGLRenderingContext.prototype);
       if (typeof WebGL2RenderingContext !== 'undefined') hookWebGL(WebGL2RenderingContext.prototype);
     } catch(e) {}
+  }
+
+  if (!USE_NATIVE && FP.spoofWebGPU && navigator.gpu) {
+    var origRequestAdapter = navigator.gpu.requestAdapter.bind(navigator.gpu);
+    navigator.gpu.requestAdapter = maskNative(function(opts) {
+      return origRequestAdapter(opts).then(function(adapter) {
+        if (!adapter) return adapter;
+        try {
+          adapter.info = {
+            vendor: FP.webgpuVendor || 'nvidia',
+            architecture: FP.webgpuArchitecture || 'ampere',
+            device: '',
+            description: '',
+          };
+        } catch(e) {}
+        return adapter;
+      });
+    }, 'requestAdapter');
   }
 
   if (!USE_NATIVE && FP.audioNoise) {
@@ -352,13 +409,44 @@ export function buildInjectionRuntimeScript(fpJson: string, options: RuntimeOpti
   delete window.__pw_manual;
   delete window.__PW_inspect;
 
+  if (!window.chrome) window.chrome = {};
+  if (!window.chrome.csi) {
+    window.chrome.csi = maskNative(function() {
+      return { onloadT: Date.now(), startE: Date.now(), pageT: 0, tran: 15 };
+    }, 'csi');
+  }
+  if (!window.chrome.loadTimes) {
+    window.chrome.loadTimes = maskNative(function() {
+      return {
+        commitLoadTime: Date.now() / 1000,
+        connectionInfo: 'http/1.1',
+        finishDocumentLoadTime: Date.now() / 1000,
+        finishLoadTime: Date.now() / 1000,
+        firstPaintAfterLoadTime: 0,
+        firstPaintTime: Date.now() / 1000,
+        navigationType: 'Other',
+        npnNegotiatedProtocol: 'unknown',
+        requestTime: Date.now() / 1000,
+        startLoadTime: Date.now() / 1000,
+        wasAlternateProtocolAvailable: false,
+        wasFetchedViaSpdy: false,
+        wasNpnNegotiated: false,
+      };
+    }, 'loadTimes');
+  }
+
   if (navigator.permissions && navigator.permissions.query) {
     var origQuery = navigator.permissions.query.bind(navigator.permissions);
     navigator.permissions.query = maskNative(function(desc) {
-      if (desc.name === 'notifications') return Promise.resolve({ state: 'prompt', onchange: null });
+      var name = desc && desc.name;
+      if (name === 'notifications') return Promise.resolve({ state: 'prompt', onchange: null });
+      if (name === 'geolocation') return Promise.resolve({ state: 'granted', onchange: null });
+      if (name === 'camera' || name === 'microphone') return Promise.resolve({ state: 'prompt', onchange: null });
       return origQuery(desc);
     }, 'query');
   }
+
+  ${workerBridge}
 })();
 `;
 }
