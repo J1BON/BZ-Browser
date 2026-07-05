@@ -12,6 +12,8 @@ export interface ValidationReport {
   total: number;
   checks: ValidationCheck[];
   timestamp: number;
+  /** True when this report only validates injected values (not external suites). */
+  selfReferential: boolean;
 }
 
 const VALIDATION_SCRIPT = `
@@ -21,18 +23,25 @@ const VALIDATION_SCRIPT = `
 
   add('webdriver_hidden', navigator.webdriver !== true, 'webdriver=' + navigator.webdriver);
   add('no_playwright', !window.__playwright && !window.__pw_manual, 'playwright artifacts');
-  add('chrome_runtime', !!(window.chrome && window.chrome.runtime), 'chrome.runtime');
+  add('no_fake_chrome_runtime', !(window.chrome && window.chrome.runtime), 'chrome.runtime should be absent on normal pages');
   add('languages', navigator.languages && navigator.languages.length >= 1, navigator.languages?.join(','));
   add('platform', !!navigator.platform, navigator.platform);
-  add('plugins', navigator.plugins && navigator.plugins.length > 0, String(navigator.plugins?.length ?? 0));
+  add('plugins_count', navigator.plugins && navigator.plugins.length >= 5, String(navigator.plugins?.length ?? 0));
   add('cpu', (navigator.hardwareConcurrency ?? 0) >= 2, String(navigator.hardwareConcurrency));
   add('memory', (navigator.deviceMemory ?? 0) >= 2, String(navigator.deviceMemory ?? 'n/a'));
-  add('webrtc_blocked', typeof RTCPeerConnection === 'undefined', 'RTCPeerConnection');
+  add('webrtc_present', typeof RTCPeerConnection === 'function', 'RTCPeerConnection');
   add('screen', screen.width > 0 && screen.height > 0, screen.width + 'x' + screen.height);
   add('viewport', window.innerWidth > 0 && window.innerHeight > 0, window.innerWidth + 'x' + window.innerHeight);
   add('dpr', window.devicePixelRatio >= 1, String(window.devicePixelRatio));
   add('timezone', !!Intl.DateTimeFormat().resolvedOptions().timeZone, Intl.DateTimeFormat().resolvedOptions().timeZone);
   add('dnt_null', navigator.doNotTrack === null || navigator.doNotTrack === 'unspecified', String(navigator.doNotTrack));
+
+  try {
+    var tdStr = HTMLCanvasElement.prototype.toDataURL.toString();
+    add('fn_native_mask', /\\[native code\\]/.test(tdStr), tdStr.slice(0, 48));
+  } catch (e) {
+    add('fn_native_mask', false, e.message);
+  }
 
   if (navigator.userAgentData) {
     const uad = navigator.userAgentData;
@@ -50,10 +59,18 @@ const VALIDATION_SCRIPT = `
     ctx.textBaseline = 'top';
     ctx.font = '16px Arial';
     ctx.fillText('antidetect-probe', 4, 8);
-    const d1 = canvas.toDataURL().slice(-24);
-    const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    add('canvas_export', d1.length > 8, d1);
-    add('canvas_read', img.data.length > 0, String(img.data.length));
+    const d1 = canvas.toDataURL();
+    const d2 = canvas.toDataURL();
+    add('canvas_stable', d1 === d2, d1.slice(-16) + ' vs ' + d2.slice(-16));
+    const img1 = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const img2 = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    var same = img1.data.length === img2.data.length;
+    if (same) {
+      for (var i = 0; i < Math.min(img1.data.length, 400); i++) {
+        if (img1.data[i] !== img2.data[i]) { same = false; break; }
+      }
+    }
+    add('canvas_read_stable', same, String(img1.data.length));
   } catch (e) {
     add('canvas', false, e.message);
   }
@@ -98,7 +115,6 @@ export async function validateFingerprint(page: Page): Promise<ValidationReport>
 
   const checks = await page.evaluate(VALIDATION_SCRIPT) as ValidationCheck[];
 
-  // mediaDevices is async — evaluate separately
   const mediaCheck = await page.evaluate(async () => {
     if (!navigator.mediaDevices?.enumerateDevices) return { name: 'media_devices', pass: false, detail: 'missing' };
     const devs = await navigator.mediaDevices.enumerateDevices();
@@ -115,5 +131,6 @@ export async function validateFingerprint(page: Page): Promise<ValidationReport>
     total,
     checks: allChecks,
     timestamp: Date.now(),
+    selfReferential: true,
   };
 }

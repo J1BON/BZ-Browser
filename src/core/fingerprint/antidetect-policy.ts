@@ -13,7 +13,7 @@ export const ANTIDETECT_DEFAULTS: Partial<FingerprintConfig> = {
   clientRects: '2',
   speechVoices: '2',
   mediaDevices: '2',
-  webRTC: '3',
+  webRTC: '2',
   fontEnable: '2',
   mac: '2',
   deviceName: '2',
@@ -34,7 +34,8 @@ export function antidetectWarnings(fp: FingerprintConfig, hasProxy: boolean): st
   const warnings: string[] = [];
   if (!hasProxy) warnings.push('No proxy — sites see your real IP (high captcha/ban risk)');
   if (fp.device === 'iOS') warnings.push('iOS profile on Chromium engine — use Android for best antidetect');
-  if (fp.webRTC !== '3') warnings.push('WebRTC not fully blocked — IP may leak');
+  if (fp.webRTC === '1') warnings.push('WebRTC fully enabled — local IP may leak');
+  if (fp.webRTC === '2' && !hasProxy) warnings.push('WebRTC relay mode needs proxy IP for srflx rewrite');
   if (fp.sslFingerprint === '1') warnings.push('TLS spoof disabled — identical JA3 across profiles');
   return warnings;
 }

@@ -124,6 +124,7 @@ export async function validateFingerprintExternal(page: Page): Promise<ExternalV
 
   return {
     ...local,
+    selfReferential: false,
     score: Math.round((combinedPassed / combinedTotal) * 100),
     passed: combinedPassed,
     total: combinedTotal,

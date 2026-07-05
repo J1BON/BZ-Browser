@@ -6,7 +6,7 @@ import type { BrowserProfile, LaunchResult, ProxyConfig } from '../../types/prof
 import type { CdpEndpoint } from '../../types/phase4.js';
 import type { WarmupResult } from '../../types/warmup.js';
 import { buildFingerprintScript, buildLaunchArgs, buildExtraHeaders } from '../fingerprint/injection.js';
-import { resolveChromium, getChromiumInstallHint, checkTlsReadiness } from '../fingerprint/chromium-resolver.js';
+import { resolveChromium, getChromiumInstallHint, checkTlsReadiness, isPatchedSource } from '../fingerprint/chromium-resolver.js';
 import { validateFingerprint, type ValidationReport } from '../fingerprint/validator.js';
 import { validateFingerprintExternal } from '../fingerprint/external-validator.js';
 import { warmupRunner } from '../automation/warmup-runner.js';
@@ -101,8 +101,9 @@ export class BrowserLauncher {
       const activeProxy = proxyOverride ?? profile.proxy;
       const fp = profile.fingerprint;
       const isMobile = fp.formFactor === 'mobile';
+      const useNativeKernel = isPatchedSource(chromiumInfo.source);
       const extraHeaders = {
-        ...buildExtraHeaders(fp),
+        ...buildExtraHeaders(fp, profile.fingerprintId),
         'User-Agent': fp.userAgent,
       };
 
@@ -142,7 +143,7 @@ export class BrowserLauncher {
       });
 
       await context.addInitScript({
-        content: buildFingerprintScript(fp, profile.fingerprintId, activeProxy.ip),
+        content: buildFingerprintScript(fp, profile.fingerprintId, activeProxy.ip, { useNativeKernel }),
       });
 
       if (profile.openUrls.length > 0) {

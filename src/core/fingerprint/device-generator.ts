@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import { pickTlsProfile } from './tls-profiles.js';
+import { pickChromeMajor, buildChromeVersion, DEFAULT_CHROME_MAJOR, CHROME_MAJORS } from './browser-versions.js';
 import { FingerprintGenerator } from 'fingerprint-generator';
 import { v4 as uuidv4 } from 'uuid';
 import { seedInt, seedRandom } from './seed.js';
@@ -81,6 +82,22 @@ function inferWebGpuVendor(vendor: string): string {
   return 'generic';
 }
 
+function patchUserAgentVersion(ua: string, browserVersion: string, mobileOs: 'iOS' | 'Android' | DesktopOs): string {
+  const major = browserVersion.split('.')[0] ?? DEFAULT_CHROME_MAJOR;
+  if (mobileOs === 'iOS') {
+    return ua.replace(/Version\/[\d.]+/, `Version/${major}.0`).replace(/Safari\/[\d.]+/, 'Safari/605.1.15');
+  }
+  return ua.replace(/Chrome\/[\d.]+/, `Chrome/${browserVersion}`).replace(/Chromium\/[\d.]+/, `Chromium/${browserVersion}`);
+}
+
+function resolveBrowserVersion(deviceSeed: string, extracted?: string): string {
+  const extractedMajor = extracted?.split('.')[0];
+  const major = extractedMajor && CHROME_MAJORS.includes(extractedMajor as typeof CHROME_MAJORS[number])
+    ? extractedMajor
+    : pickChromeMajor(deviceSeed);
+  return buildChromeVersion(major, deviceSeed);
+}
+
 function shuffleFonts(fonts: string[], seed: string, count: number): string[] {
   const rng = seedRandom(`${seed}:fonts`);
   const copy = [...fonts];
@@ -101,7 +118,7 @@ function baseSpoofFields(deviceSeed: string, _mobile: boolean) {
     clientRects: '2' as const,
     speechVoices: '2' as const,
     mediaDevices: '2' as const,
-    webRTC: '3' as const,
+    webRTC: '2' as const,
     fontEnable: '2' as const,
     mac: '2' as const,
     macValue: randomMac(deviceSeed),
@@ -162,11 +179,12 @@ function generateMobileDevice(geo: GeoIpResult | undefined, deviceSeed: string, 
   const windowH = screen.innerHeight || screenH;
 
   const browserMatch = nav.userAgent.match(/(?:Chrome|Version)\/([\d.]+)/);
-  const browserVersion = browserMatch?.[1] ?? '131.0.6778.86';
-  const major = browserVersion.split('.')[0] ?? '131';
+  const browserVersion = resolveBrowserVersion(deviceSeed, browserMatch?.[1]);
+  const major = browserVersion.split('.')[0] ?? DEFAULT_CHROME_MAJOR;
+  const userAgent = patchUserAgentVersion(nav.userAgent, browserVersion, mobileOs);
 
   return {
-    userAgent: nav.userAgent,
+    userAgent,
     browserVersion,
     kernel: mobileOs === 'iOS' ? `Safari ${major}` : `Chrome ${major}`,
     device: mobileOs,
@@ -220,8 +238,9 @@ function generateDesktopDevice(geo: GeoIpResult | undefined, deviceSeed: string,
   const windowH = Math.min(screen.innerHeight || screenH - 60, screenH);
 
   const chromeMatch = nav.userAgent.match(/Chrome\/([\d.]+)/);
-  const browserVersion = chromeMatch?.[1] ?? '131.0.6778.86';
-  const major = browserVersion.split('.')[0] ?? '131';
+  const browserVersion = resolveBrowserVersion(deviceSeed, chromeMatch?.[1]);
+  const major = browserVersion.split('.')[0] ?? DEFAULT_CHROME_MAJOR;
+  const userAgent = patchUserAgentVersion(nav.userAgent, browserVersion, device);
 
   const baseFonts = fingerprint.fonts.length > 0
     ? fingerprint.fonts
@@ -230,7 +249,7 @@ function generateDesktopDevice(geo: GeoIpResult | undefined, deviceSeed: string,
   const fontList = shuffleFonts(baseFonts, deviceSeed, fontCount);
 
   return {
-    userAgent: nav.userAgent,
+    userAgent,
     browserVersion,
     kernel: `Chrome ${major}`,
     device,

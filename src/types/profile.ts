@@ -156,6 +156,7 @@ export interface ValidationReport {
   total: number;
   checks: { name: string; pass: boolean; detail: string }[];
   timestamp: number;
+  selfReferential?: boolean;
   externalScore?: number;
   sites?: { name: string; url: string; pass: boolean; detail: string }[];
 }
