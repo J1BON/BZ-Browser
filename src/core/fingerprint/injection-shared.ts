@@ -3,6 +3,7 @@
 export function buildScopeHooksBody(): string {
   return `
   function defineProtoGetter(proto, key, getter) {
+    if (!proto) return;
     try {
       var orig = Object.getOwnPropertyDescriptor(proto, key);
       Object.defineProperty(proto, key, {
@@ -49,18 +50,24 @@ export function buildScopeHooksBody(): string {
     return img;
   }
 
+  function patchNavigatorProto(proto) {
+    if (!proto) return;
+    defineProtoGetter(proto, 'userAgent', function() { return FP.ua; });
+    defineProtoGetter(proto, 'platform', function() { return FP.platform; });
+    defineProtoGetter(proto, 'languages', function() { return FP.langs; });
+    defineProtoGetter(proto, 'language', function() { return FP.langs[0]; });
+    defineProtoGetter(proto, 'hardwareConcurrency', function() { return FP.hwConcurrency; });
+    defineProtoGetter(proto, 'deviceMemory', function() { return FP.deviceMemory; });
+    defineProtoGetter(proto, 'maxTouchPoints', function() { return FP.maxTouchPoints; });
+    defineProtoGetter(proto, 'doNotTrack', function() { return FP.doNotTrack; });
+    defineProtoGetter(proto, 'webdriver', function() { return false; });
+    defineProtoGetter(proto, 'vendor', function() { return 'Google Inc.'; });
+    defineProtoGetter(proto, 'pdfViewerEnabled', function() { return true; });
+  }
+
   function patchNavigator() {
-    defineProtoGetter(Navigator.prototype, 'userAgent', function() { return FP.ua; });
-    defineProtoGetter(Navigator.prototype, 'platform', function() { return FP.platform; });
-    defineProtoGetter(Navigator.prototype, 'languages', function() { return FP.langs; });
-    defineProtoGetter(Navigator.prototype, 'language', function() { return FP.langs[0]; });
-    defineProtoGetter(Navigator.prototype, 'hardwareConcurrency', function() { return FP.hwConcurrency; });
-    defineProtoGetter(Navigator.prototype, 'deviceMemory', function() { return FP.deviceMemory; });
-    defineProtoGetter(Navigator.prototype, 'maxTouchPoints', function() { return FP.maxTouchPoints; });
-    defineProtoGetter(Navigator.prototype, 'doNotTrack', function() { return FP.doNotTrack; });
-    defineProtoGetter(Navigator.prototype, 'webdriver', function() { return false; });
-    defineProtoGetter(Navigator.prototype, 'vendor', function() { return 'Google Inc.'; });
-    defineProtoGetter(Navigator.prototype, 'pdfViewerEnabled', function() { return true; });
+    patchNavigatorProto(typeof Navigator !== 'undefined' ? Navigator.prototype : null);
+    patchNavigatorProto(typeof WorkerNavigator !== 'undefined' ? WorkerNavigator.prototype : null);
   }
 
   function buildPluginArray() {
@@ -102,7 +109,9 @@ export function buildScopeHooksBody(): string {
   }
 
   function patchPlugins() {
-    defineProtoGetter(Navigator.prototype, 'plugins', function() { return buildPluginArray(); });
+    var build = buildPluginArray;
+    defineProtoGetter(typeof Navigator !== 'undefined' ? Navigator.prototype : null, 'plugins', function() { return build(); });
+    defineProtoGetter(typeof WorkerNavigator !== 'undefined' ? WorkerNavigator.prototype : null, 'plugins', function() { return build(); });
   }
 
   function hookWebGL(proto) {
@@ -144,6 +153,7 @@ export function buildScopeHooksBody(): string {
     };
     if (typeof OffscreenCanvas !== 'undefined') {
       var origOC = OffscreenCanvas.prototype.getContext;
+      var origConvertToBlob = OffscreenCanvas.prototype.convertToBlob;
       OffscreenCanvas.prototype.getContext = function(type, attrs) {
         var ctx = origOC.call(this, type, attrs);
         if (ctx && type === '2d') {
@@ -154,6 +164,24 @@ export function buildScopeHooksBody(): string {
         }
         return ctx;
       };
+      if (origConvertToBlob) {
+        OffscreenCanvas.prototype.convertToBlob = function(options) {
+          var self = this;
+          var ctx = self.getContext('2d');
+          if (ctx && self.width && self.height) {
+            var origGet = ctx.getImageData.bind(ctx);
+            var img = origGet(0, 0, self.width, self.height);
+            var backup = new Uint8ClampedArray(img.data);
+            applyUnifiedNoise(img, 0, 0);
+            ctx.putImageData(img, 0, 0);
+            return origConvertToBlob.call(self, options).finally(function() {
+              img.data.set(backup);
+              ctx.putImageData(img, 0, 0);
+            });
+          }
+          return origConvertToBlob.call(self, options);
+        };
+      }
     }
   }
 

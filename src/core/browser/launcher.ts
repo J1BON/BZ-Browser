@@ -11,7 +11,7 @@ import {
   canonicalToCdpUserAgentMetadata,
   isIosOnChromium,
 } from '../fingerprint/canonical-fingerprint.js';
-import { resolveChromium, getChromiumInstallHint, checkTlsReadiness, isPatchedSource } from '../fingerprint/chromium-resolver.js';
+import { resolveChromium, getChromiumInstallHint, checkTlsReadiness, isPatchedSource, requirePatchedChromium } from '../fingerprint/chromium-resolver.js';
 import { validateFingerprintQuick } from '../fingerprint/validator.js';
 import { validateFingerprintExternal, validateFingerprintQuickExternal } from '../fingerprint/external-validator.js';
 import { warmupRunner } from '../automation/warmup-runner.js';
@@ -125,6 +125,11 @@ export class BrowserLauncher {
       const chromiumInfo = resolveChromium();
       if (!chromiumInfo) {
         return { success: false, profileId: profile.id, error: getChromiumInstallHint() };
+      }
+
+      const patched = requirePatchedChromium(chromiumInfo.source);
+      if (!patched.ok) {
+        return { success: false, profileId: profile.id, error: patched.error, chromiumSource: chromiumInfo.source };
       }
 
       const tls = checkTlsReadiness(profile.fingerprint.sslFingerprint, chromiumInfo.source);

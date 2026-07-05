@@ -20,9 +20,19 @@ const WORKER_CONSISTENCY_SCRIPT = `
 (async () => {
   const mainUa = navigator.userAgent;
   const mainPlatform = navigator.platform;
-  const workerUa = await new Promise((resolve, reject) => {
+  const mainLangs = navigator.languages.length;
+  const mainTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const workerData = await new Promise((resolve, reject) => {
     try {
-      const code = 'postMessage({ ua: navigator.userAgent, platform: navigator.platform })';
+      const code = [
+        'postMessage({',
+        '  ua: navigator.userAgent,',
+        '  platform: navigator.platform,',
+        '  langs: navigator.languages.length,',
+        '  tz: Intl.DateTimeFormat().resolvedOptions().timeZone,',
+        '  hw: navigator.hardwareConcurrency',
+        '})',
+      ].join('\\n');
       const blob = new Blob([code], { type: 'application/javascript' });
       const w = new Worker(URL.createObjectURL(blob));
       w.onmessage = (e) => { w.terminate(); resolve(e.data); };
@@ -32,10 +42,15 @@ const WORKER_CONSISTENCY_SCRIPT = `
       reject(String(e));
     }
   });
+  const navOwnUa = Object.prototype.hasOwnProperty.call(navigator, 'userAgent');
   return {
-    uaMatch: workerUa.ua === mainUa,
-    platformMatch: workerUa.platform === mainPlatform,
-    workerUa: workerUa.ua,
+    uaMatch: workerData.ua === mainUa,
+    platformMatch: workerData.platform === mainPlatform,
+    langsMatch: workerData.langs === mainLangs,
+    tzMatch: workerData.tz === mainTz,
+    hwMatch: workerData.hw === navigator.hardwareConcurrency,
+    noOwnUa: !navOwnUa,
+    workerUa: workerData.ua,
     mainUa,
   };
 })();
@@ -70,8 +85,14 @@ export async function validateFingerprintQuick(page: Page): Promise<ValidationRe
   const checks: ValidationCheck[] = [];
 
   const workerResult = await page.evaluate(WORKER_CONSISTENCY_SCRIPT).catch(
-    (err: Error) => ({ uaMatch: false, platformMatch: false, workerUa: '', mainUa: '', error: err.message }),
-  ) as { uaMatch: boolean; platformMatch: boolean; workerUa: string; mainUa: string; error?: string };
+    (err: Error) => ({
+      uaMatch: false, platformMatch: false, langsMatch: false, tzMatch: false, hwMatch: false,
+      noOwnUa: false, workerUa: '', mainUa: '', error: err.message,
+    }),
+  ) as {
+    uaMatch: boolean; platformMatch: boolean; langsMatch: boolean; tzMatch: boolean;
+    hwMatch: boolean; noOwnUa: boolean; workerUa: string; mainUa: string; error?: string;
+  };
 
   checks.push({
     name: 'worker_ua_match',
@@ -84,6 +105,26 @@ export async function validateFingerprintQuick(page: Page): Promise<ValidationRe
     name: 'worker_platform_match',
     pass: workerResult.platformMatch === true,
     detail: workerResult.platformMatch ? 'ok' : 'worker platform mismatch',
+  });
+  checks.push({
+    name: 'worker_langs_match',
+    pass: workerResult.langsMatch === true,
+    detail: workerResult.langsMatch ? 'ok' : 'worker language count mismatch',
+  });
+  checks.push({
+    name: 'worker_tz_match',
+    pass: workerResult.tzMatch === true,
+    detail: workerResult.tzMatch ? 'ok' : 'worker timezone mismatch (CDP timezoneId should align)',
+  });
+  checks.push({
+    name: 'worker_hw_match',
+    pass: workerResult.hwMatch === true,
+    detail: workerResult.hwMatch ? 'ok' : 'worker hardwareConcurrency mismatch',
+  });
+  checks.push({
+    name: 'nav_no_own_ua',
+    pass: workerResult.noOwnUa === true,
+    detail: workerResult.noOwnUa ? 'userAgent on prototype only' : 'own userAgent on navigator instance',
   });
 
   const nativeMask = await page.evaluate(() => {

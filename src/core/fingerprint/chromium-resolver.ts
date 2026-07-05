@@ -134,15 +134,32 @@ export function checkTlsReadiness(sslFingerprint: string, source: ChromiumInfo['
   ready: boolean;
   warning?: string;
 } {
-  if (sslFingerprint === '1') {
-    return { ready: true };
+  if (sslFingerprint === '1' && !isPatchedSource(source)) {
+    return {
+      ready: true,
+      warning: 'Stock Chrome — JS spoofing is degraded; install fingerprint-chromium for production use.',
+    };
   }
   if (isPatchedSource(source)) {
     return { ready: true };
   }
   return {
     ready: false,
-    warning: 'TLS/JA3 spoofing requires patched Chromium. Install via Settings → "Install Patched Chromium" or set FINGERPRINT_CHROMIUM_PATH.',
+    warning: 'Patched fingerprint-chromium is required. Install via Settings → "Install Patched Chromium" or set FINGERPRINT_CHROMIUM_PATH.',
+  };
+}
+
+/** Antidetect profiles require the patched binary — stock Chrome is not supported for launch. */
+export function requirePatchedChromium(source: ChromiumInfo['source'] | null): { ok: boolean; error?: string } {
+  if (process.env.ALLOW_STOCK_CHROME === '1') {
+    return { ok: true };
+  }
+  if (isPatchedSource(source)) {
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    error: 'Patched fingerprint-chromium is required (stock Chrome is detectable). Install via Settings or set ALLOW_STOCK_CHROME=1 for dev only.',
   };
 }
 
