@@ -1,0 +1,59 @@
+appId: com.cloudantidetect.browser
+productName: Cloud Antidetect Browser
+copyright: Copyright © 2026
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - dist/**/*
+  - dist-electron/**/*
+  - package.json
+  - "!**/*.map"
+  - "!**/*.ts"
+
+asar: true
+
+extraMetadata:
+  main: dist-electron/electron/main.js
+
+extraResources:
+  - from: build/chromium
+    to: chromium
+    filter:
+      - "**/*"
+      - "!**/.bundle-missing"
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: ${productName}-Setup-${version}.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  allowElevation: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Cloud Antidetect Browser
+  deleteAppDataOnUninstall: false
+
+mac:
+  target:
+    - dmg
+  category: public.app-category.utilities
+  artifactName: ${productName}-${version}-mac.${ext}
+  hardenedRuntime: true
+  gatekeeperAssess: false
+
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Network
+  artifactName: ${productName}-${version}-linux-${arch}.${ext}
+  maintainer: Cloud Antidetect

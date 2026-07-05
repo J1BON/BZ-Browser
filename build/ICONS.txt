@@ -1,0 +1,6 @@
+# Place app icons here for branded installers:
+# - icon.ico   (256x256, Windows NSIS)
+# - icon.icns  (macOS DMG)
+# - icons/     (Linux: 16x16, 32x32, 48x48, 256x256 PNGs)
+#
+# Without custom icons, electron-builder uses the default Electron icon.

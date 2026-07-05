@@ -1,0 +1,17 @@
+node_modules/
+dist/
+dist-electron/
+release/
+build/chromium/
+*.blockmap
+*.log
+.env
+.env.local
+credentials.json
+token.json
+google-token.json
+**/CloudAntidetect/
+.cursor/
+*.zip
+.DS_Store
+Thumbs.db

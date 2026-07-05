@@ -1,0 +1,67 @@
+{
+  "name": "cloud-antidetect-browser",
+  "version": "0.5.0",
+  "description": "Top-class antidetect browser with Google Drive cloud sync",
+  "main": "dist-electron/electron/main.js",
+  "type": "module",
+  "author": "J1BON",
+  "homepage": "https://github.com/J1BON/cloud-antidetect-browser",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/J1BON/cloud-antidetect-browser.git"
+  },
+  "bugs": {
+    "url": "https://github.com/J1BON/cloud-antidetect-browser/issues"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build && tsc -p tsconfig.electron.json",
+    "preview": "vite preview",
+    "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && tsc -p tsconfig.electron.json && electron .\"",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
+    "test:devices": "npx tsx scripts/test-device-uniqueness.ts",
+    "prepare:chromium": "npx tsx scripts/prepare-chromium-bundle.ts",
+    "pack": "npm run prepare:chromium && npm run build && electron-builder --publish never",
+    "pack:win": "npm run prepare:chromium && npm run build && electron-builder --win --publish never",
+    "pack:mac": "npm run prepare:chromium && npm run build && electron-builder --mac --publish never",
+    "pack:linux": "npm run build && electron-builder --linux --publish never",
+    "release": "npm run build && electron-builder --publish always -c.publish.provider=generic -c.publish.url=%UPDATE_BASE_URL%",
+    "release:win": "npm run build && electron-builder --win --publish always -c.publish.provider=generic -c.publish.url=%UPDATE_BASE_URL%"
+  },
+  "keywords": [
+    "antidetect",
+    "browser",
+    "fingerprint",
+    "google-drive"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "electron-store": "^10.0.0",
+    "electron-updater": "^6.6.2",
+    "extract-zip": "^2.0.1",
+    "fingerprint-generator": "^2.1.82",
+    "fingerprint-injector": "^2.1.82",
+    "googleapis": "^144.0.0",
+    "header-generator": "^2.1.82",
+    "playwright-core": "^1.50.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "undici": "^8.7.0",
+    "uuid": "^11.0.5",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/archiver": "^6.0.3",
+    "@types/react": "^19.0.8",
+    "@types/react-dom": "^19.0.3",
+    "@types/uuid": "^10.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "electron": "^34.0.0",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.11",
+    "wait-on": "^8.0.2"
+  }
+}
