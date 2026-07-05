@@ -66,9 +66,34 @@ git push origin v0.5.0
 
 1. **One profile = one identity** — never share profiles between accounts
 2. **Always use a residential proxy** — assign before launch
-3. **Install patched Chromium** — Settings → Install Patched Chromium (TLS/JA3)
+3. **Install patched Chromium** — Settings → Install Patched Chromium (TLS/JA3). The app pins a tested release tag in `src/core/fingerprint/chromium-manifest.ts`; re-install when the pin bumps.
 4. **Prefer Android/Windows/macOS** — iOS Safari UA on Chromium is flagged by anti-bot
-5. **Validate before use** — Launch → Validate (85%+ score gate on new profiles)
+5. **Validate before use** — Launch → Validate (85%+ score gate on new profiles). CI runs `test:core` + `test:injection` on every PR.
+
+## Patched Chromium versioning
+
+- Pinned release: see `CHROMIUM_MANIFEST.pinnedTag` in `src/core/fingerprint/chromium-manifest.ts`
+- Install writes `chromium-install.json` with tag + version for drift detection
+- Settings shows a warning when installed tag ≠ pinned tag
+- Bump the pin only after validating TLS/JA3 and injection scores against CreepJS / BrowserLeaks
+
+## Lawful use & abuse policy
+
+This project is intended for **legitimate** purposes only:
+
+- Privacy research and fingerprint hardening on systems you own or have permission to test
+- Multi-account workflows where the platform explicitly permits separate identities
+- QA automation and anti-bot regression testing with written authorization
+
+**Do not use** this software to:
+
+- Evade fraud detection, payment abuse, or identity verification you are not entitled to bypass
+- Scrape, spam, or automate actions that violate a site's terms of service or applicable law
+- Impersonate others or conduct credential stuffing, account takeover, or similar abuse
+
+Maintainers may remove releases or restrict distribution if the project is used primarily for abuse. Report misuse via GitHub Issues — we cooperate with good-faith security and abuse reports.
+
+Users are solely responsible for compliance with local laws and third-party policies.
 
 ## API
 
@@ -119,4 +144,4 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting.
 
 ## Disclaimer
 
-This software is for legitimate privacy testing, automation, and multi-account management where permitted by law and platform terms of service. Users are responsible for compliance with applicable laws and website policies.
+See **Lawful use & abuse policy** above. This software is provided as-is under the MIT license with no warranty of fitness for any particular purpose.

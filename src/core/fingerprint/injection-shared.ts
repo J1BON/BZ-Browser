@@ -78,12 +78,14 @@ export function buildScopeHooksBody(): string {
 
   function patchUserAgentData() {
     if (typeof navigator === 'undefined' || !navigator.userAgentData) return;
+    var sample = navigator.userAgentData;
+    var uadProto = Object.getPrototypeOf(sample);
     var brands = FP.uaBrands.map(function(b) { return { brand: b.brand, version: b.version }; });
     var uadObj = {
       brands: brands,
       mobile: FP.uaMobile,
       platform: FP.uaPlatform,
-      getHighEntropyValues: function(hints) {
+      getHighEntropyValues: maskNative(function(hints) {
         var result = { brands: brands, mobile: FP.uaMobile, platform: FP.uaPlatform };
         if (hints.indexOf('architecture') >= 0) result.architecture = FP.architecture;
         if (hints.indexOf('bitness') >= 0) result.bitness = FP.bitness;
@@ -92,9 +94,10 @@ export function buildScopeHooksBody(): string {
         if (hints.indexOf('uaFullVersion') >= 0) result.uaFullVersion = FP.uaFullVersion;
         if (hints.indexOf('fullVersionList') >= 0) result.fullVersionList = FP.fullVersionList;
         return Promise.resolve(result);
-      },
-      toJSON: function() { return { brands: brands, mobile: FP.uaMobile, platform: FP.uaPlatform }; },
+      }, 'getHighEntropyValues'),
+      toJSON: maskNative(function() { return { brands: brands, mobile: FP.uaMobile, platform: FP.uaPlatform }; }, 'toJSON'),
     };
+    try { Object.setPrototypeOf(uadObj, uadProto); } catch(e) {}
     defineProtoGetter(typeof Navigator !== 'undefined' ? Navigator.prototype : null, 'userAgentData', function() { return uadObj; });
     defineProtoGetter(typeof WorkerNavigator !== 'undefined' ? WorkerNavigator.prototype : null, 'userAgentData', function() { return uadObj; });
   }
@@ -170,20 +173,28 @@ export function buildScopeHooksBody(): string {
       return origGetSupportedExtensions.call(this);
     };
     proto.getShaderPrecisionFormat = function(shaderType, precisionType) {
-      if (FP.webGlMetaSpoof && shaderPrecision.length) {
+      var fmt = origGetShaderPrecisionFormat.call(this, shaderType, precisionType);
+      if (FP.webGlMetaSpoof && shaderPrecision.length && fmt) {
         for (var i = 0; i < shaderPrecision.length; i++) {
           var sp = shaderPrecision[i];
           if (sp.shaderType === shaderType && sp.precisionType === precisionType) {
-            return { rangeMin: sp.rangeMin, rangeMax: sp.rangeMax, precision: sp.precision };
+            fmt.rangeMin = sp.rangeMin;
+            fmt.rangeMax = sp.rangeMax;
+            fmt.precision = sp.precision;
+            break;
           }
         }
       }
-      return origGetShaderPrecisionFormat.call(this, shaderType, precisionType);
+      return fmt;
     };
     proto.getContextAttributes = function() {
       var attrs = origGetContextAttributes.call(this);
       if (FP.webGlMetaSpoof && attrs) {
-        return Object.assign({}, attrs, { antialias: true, alpha: true, depth: true, stencil: false, premultipliedAlpha: true });
+        attrs.antialias = true;
+        attrs.alpha = true;
+        attrs.depth = true;
+        attrs.stencil = false;
+        attrs.premultipliedAlpha = true;
       }
       return attrs;
     };
@@ -323,20 +334,10 @@ export function buildScopeHooksBody(): string {
 
   function wrapTextMetrics(metrics, text, fontKey) {
     var wNoise = (detUnit('mtw:' + text + ':' + fontKey) - 0.5) * 0.0001;
-    return {
-      width: metrics.width + wNoise,
-      actualBoundingBoxLeft: metrics.actualBoundingBoxLeft,
-      actualBoundingBoxRight: metrics.actualBoundingBoxRight,
-      actualBoundingBoxAscent: metrics.actualBoundingBoxAscent,
-      actualBoundingBoxDescent: metrics.actualBoundingBoxDescent,
-      fontBoundingBoxAscent: metrics.fontBoundingBoxAscent,
-      fontBoundingBoxDescent: metrics.fontBoundingBoxDescent,
-      emHeightAscent: metrics.emHeightAscent,
-      emHeightDescent: metrics.emHeightDescent,
-      hangingBaseline: metrics.hangingBaseline,
-      alphabeticBaseline: metrics.alphabeticBaseline,
-      ideographicBaseline: metrics.ideographicBaseline,
-    };
+    try {
+      Object.defineProperty(metrics, 'width', { value: metrics.width + wNoise, configurable: true });
+    } catch(e) {}
+    return metrics;
   }
 
   function patchTextMetricsNoise() {

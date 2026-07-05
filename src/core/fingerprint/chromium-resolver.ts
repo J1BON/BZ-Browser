@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { CHROMIUM_MANIFEST, readChromiumInstallRecord } from './chromium-manifest.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -19,6 +20,9 @@ export interface ChromiumStatus {
   tlsReady: boolean;
   version: string | null;
   installDir: string;
+  pinnedTag?: string;
+  installedTag?: string | null;
+  chromiumUpdateWarning?: string;
 }
 
 export function getDefaultChromiumInstallDir(): string {
@@ -119,6 +123,13 @@ export async function getChromiumStatus(): Promise<ChromiumStatus> {
   const version = info ? await probeVersion(info.path) : undefined;
   if (info && version) info.version = version;
 
+  const installDir = getDefaultChromiumInstallDir();
+  const record = await readChromiumInstallRecord(installDir);
+  let chromiumUpdateWarning: string | undefined;
+  if (isPatchedSource(info?.source) && record && record.tag !== CHROMIUM_MANIFEST.pinnedTag) {
+    chromiumUpdateWarning = `Installed Chromium ${record.tag} — app pins ${CHROMIUM_MANIFEST.pinnedTag}. Re-install from Settings.`;
+  }
+
   return {
     installed: !!info,
     path: info?.path ?? null,
@@ -126,7 +137,10 @@ export async function getChromiumStatus(): Promise<ChromiumStatus> {
     isPatched: isPatchedSource(info?.source),
     tlsReady: isPatchedSource(info?.source),
     version: version ?? null,
-    installDir: getDefaultChromiumInstallDir(),
+    installDir,
+    pinnedTag: CHROMIUM_MANIFEST.pinnedTag,
+    installedTag: record?.tag ?? null,
+    chromiumUpdateWarning,
   };
 }
 

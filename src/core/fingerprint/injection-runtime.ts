@@ -223,17 +223,24 @@ export function buildInjectionRuntimeScript(fpJson: string, options: RuntimeOpti
       }
       return candidate;
     }
+    function rewriteStatIp(s, ip) {
+      if (s.address) s.address = ip;
+      if (s.ip) s.ip = ip;
+      if (s.localIp) s.localIp = ip;
+      if (s.remoteIp) s.remoteIp = ip;
+    }
     function scrubStatsReport(report) {
       if (!report || !report.forEach) return report;
       report.forEach(function(s) {
-        if (s.type === 'local-candidate' || s.type === 'remote-candidate' || s.type === 'candidate-pair') {
-          var addr = s.address || s.ip;
-          var ctype = s.candidateType;
-          if (ctype === 'host' && isLocalIp(addr)) { report.delete(s.id); return; }
-          if (ctype === 'srflx' && proxyIp && addr && addr !== proxyIp) {
-            if (s.address) s.address = proxyIp;
-            if (s.ip) s.ip = proxyIp;
-          }
+        var addr = s.address || s.ip;
+        if (s.type === 'local-candidate') {
+          if (s.candidateType === 'host' && isLocalIp(addr)) { report.delete(s.id); return; }
+          if (s.candidateType === 'srflx' && proxyIp && addr && addr !== proxyIp) rewriteStatIp(s, proxyIp);
+        } else if (s.type === 'remote-candidate') {
+          if (s.candidateType === 'srflx' && proxyIp && addr && addr !== proxyIp) rewriteStatIp(s, proxyIp);
+        } else if (s.type === 'candidate-pair') {
+          var lip = s.localIp || s.localAddress || s.address;
+          if (proxyIp && lip && isLocalIp(lip)) rewriteStatIp(s, proxyIp);
         }
       });
       return report;

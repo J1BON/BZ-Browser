@@ -9,15 +9,62 @@ import {
   getChromiumExecutableName,
   resolveChromium,
 } from './chromium-resolver.js';
+import {
+  CHROMIUM_MANIFEST,
+  fetchLatestChromiumTag,
+  readChromiumInstallRecord,
+  writeChromiumInstallRecord,
+  type ChromiumVersionCheck,
+} from './chromium-manifest.js';
 
 const execFileAsync = promisify(execFile);
 
-const GITHUB_REPO = 'adium/fingerprint-chromium';
+const GITHUB_REPO = CHROMIUM_MANIFEST.repo;
+
+async function getReleaseAsset(tag: string): Promise<{ url: string; name: string } | null> {
+  const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${tag}`, {
+    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'CloudAntidetectBrowser' },
+  });
+  if (!res.ok) return null;
+  const data = await res.json() as {
+    assets: { name: string; browser_download_url: string }[];
+  };
+  return pickPlatformAsset(data.assets);
+}
+
+function pickPlatformAsset(assets: { name: string; browser_download_url: string }[]): { url: string; name: string } | null {
+  const platform = process.platform;
+  const asset = assets.find((a) => {
+    const n = a.name.toLowerCase();
+    if (platform === 'win32') return n.includes('win') && (n.endsWith('.zip') || n.endsWith('.7z'));
+    if (platform === 'darwin') return (n.includes('mac') || n.includes('darwin')) && n.endsWith('.zip');
+    if (platform === 'linux') return n.includes('linux') && n.endsWith('.zip');
+    return false;
+  });
+  return asset ? { url: asset.browser_download_url, name: asset.name } : null;
+}
+
+async function getLatestReleaseAsset(): Promise<{ url: string; name: string; tag: string } | null> {
+  const pinned = await getReleaseAsset(CHROMIUM_MANIFEST.pinnedTag);
+  if (pinned) return { ...pinned, tag: CHROMIUM_MANIFEST.pinnedTag };
+
+  const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
+    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'CloudAntidetectBrowser' },
+  });
+  if (!res.ok) return null;
+  const data = await res.json() as {
+    tag_name: string;
+    assets: { name: string; browser_download_url: string }[];
+  };
+  const asset = pickPlatformAsset(data.assets);
+  return asset ? { ...asset, tag: data.tag_name } : null;
+}
 
 export interface ChromiumInstallResult {
   success: boolean;
   path?: string;
   version?: string;
+  tag?: string;
   error?: string;
 }
 
@@ -34,27 +81,6 @@ async function findChromeExe(dir: string): Promise<string | null> {
     }
   }
   return null;
-}
-
-async function getLatestReleaseAsset(): Promise<{ url: string; name: string } | null> {
-  const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
-    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'CloudAntidetectBrowser' },
-  });
-  if (!res.ok) return null;
-  const data = await res.json() as {
-    assets: { name: string; browser_download_url: string }[];
-  };
-
-  const platform = process.platform;
-  const asset = data.assets.find((a) => {
-    const n = a.name.toLowerCase();
-    if (platform === 'win32') return n.includes('win') && (n.endsWith('.zip') || n.endsWith('.7z'));
-    if (platform === 'darwin') return (n.includes('mac') || n.includes('darwin')) && n.endsWith('.zip');
-    if (platform === 'linux') return n.includes('linux') && n.endsWith('.zip');
-    return false;
-  });
-
-  return asset ? { url: asset.browser_download_url, name: asset.name } : null;
 }
 
 async function copyBroearnChromium(installDir: string): Promise<string | null> {
@@ -85,12 +111,12 @@ export async function installPatchedChromium(
     return { success: true, path: broearnCopy };
   }
 
-  onProgress?.('Fetching latest fingerprint-chromium release...');
+  onProgress?.(`Fetching fingerprint-chromium ${CHROMIUM_MANIFEST.pinnedTag} (pinned)...`);
   const asset = await getLatestReleaseAsset();
   if (!asset) {
     return {
       success: false,
-      error: `No release asset found for ${process.platform}. Download manually from https://github.com/${GITHUB_REPO}/releases`,
+      error: `No release asset found for ${process.platform}. Download manually from ${CHROMIUM_MANIFEST.releasesUrl}`,
     };
   }
 
@@ -102,7 +128,7 @@ export async function installPatchedChromium(
   }
 
   const tmpZip = path.join(installDir, asset.name);
-  onProgress?.(`Downloading ${asset.name}...`);
+  onProgress?.(`Downloading ${asset.name} (${asset.tag})...`);
   const res = await fetch(asset.url);
   if (!res.ok) {
     return { success: false, error: `Download failed: HTTP ${res.status}` };
@@ -148,7 +174,39 @@ export async function installPatchedChromium(
     // ignore
   }
 
-  return { success: true, path: dest, version };
+  await writeChromiumInstallRecord(installDir, {
+    tag: asset.tag,
+    version: version ?? '',
+    installedAt: Date.now(),
+    path: dest,
+  });
+
+  return { success: true, path: dest, version, tag: asset.tag };
+}
+
+export async function checkChromiumVersion(): Promise<ChromiumVersionCheck> {
+  const installDir = getDefaultChromiumInstallDir();
+  const record = await readChromiumInstallRecord(installDir);
+  const latestTag = await fetchLatestChromiumTag();
+  const pinnedTag = CHROMIUM_MANIFEST.pinnedTag;
+  const installedTag = record?.tag ?? null;
+  const upToDate = installedTag === pinnedTag;
+  let warning: string | undefined;
+  if (!installedTag) {
+    warning = `No install record — re-install patched Chromium (pinned: ${pinnedTag}).`;
+  } else if (!upToDate) {
+    warning = `Installed Chromium tag ${installedTag} differs from pinned ${pinnedTag}. Update via Settings.`;
+  } else if (latestTag && latestTag !== pinnedTag) {
+    warning = `Upstream latest is ${latestTag}; app pins ${pinnedTag} until validated.`;
+  }
+  return {
+    upToDate,
+    installedTag,
+    installedVersion: record?.version ?? null,
+    pinnedTag,
+    latestTag,
+    warning,
+  };
 }
 
 export async function getChromiumInstallStatus() {

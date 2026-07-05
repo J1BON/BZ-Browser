@@ -21,6 +21,8 @@
     "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
     "test:devices": "npx tsx scripts/test-device-uniqueness.ts",
     "test:core": "npx tsx scripts/test-core.ts",
+    "test:injection": "npx tsx scripts/test-injection-contract.ts",
+    "test:fingerprint-external": "npx tsx scripts/test-fingerprint-external.ts",
     "prepare:chromium": "npx tsx scripts/prepare-chromium-bundle.ts",
     "pack": "npm run prepare:chromium && npm run build && electron-builder --publish never",
     "pack:win": "npm run prepare:chromium && npm run build && electron-builder --win --publish never",
