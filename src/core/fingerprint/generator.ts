@@ -56,6 +56,8 @@ export function createProfile(
     warmupOnLaunch: false,
     headless: false,
     minFpScore: DEFAULT_MIN_FP_SCORE,
+    enableCdp: false,
+    ignoreHTTPSErrors: false,
     proxyPoolIds: [],
   };
 }

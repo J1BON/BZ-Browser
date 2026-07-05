@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { buildTlsLaunchArgs, getTlsProfile } from '../src/core/fingerprint/tls-profiles.js';
-import { buildExtraHeaders } from '../src/core/fingerprint/injection.js';
-import { buildDeviceIdentity } from '../src/core/fingerprint/device-identity.js';
-import { encryptBuffer, decryptBuffer } from '../src/core/sync/encryption.js';
+import { buildNetworkHeaders } from '../src/core/fingerprint/injection.js';
+import { buildCanonicalFingerprint } from '../src/core/fingerprint/canonical-fingerprint.js';
+import { encryptBuffer, decryptBuffer, hashPassphrase, verifyPassphrase } from '../src/core/sync/encryption.js';
 import type { FingerprintConfig } from '../src/types/profile.js';
 
 function testTlsFingerprintIsInteger(): void {
@@ -14,7 +14,7 @@ function testTlsFingerprintIsInteger(): void {
   assert.ok(!val.includes(','), 'JA3 string must not be passed to --fingerprint');
 }
 
-function testClientHintsMatchIdentity(): void {
+function testCanonicalFingerprintHeaders(): void {
   const fp: FingerprintConfig = {
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.7000.42 Safari/537.36',
     browserVersion: '136.0.7000.42',
@@ -47,11 +47,11 @@ function testClientHintsMatchIdentity(): void {
     hardwareAccelerate: '1',
   };
   const seed = 'profile-seed-1';
-  const identity = buildDeviceIdentity(fp, seed);
-  const headers = buildExtraHeaders(fp, seed);
-  assert.ok(headers['Sec-CH-UA-Full-Version']?.includes(identity.uaFullVersion));
-  assert.ok(headers['Sec-CH-UA-Full-Version-List']?.includes('136.0.7000.42'));
-  assert.ok(headers['Sec-CH-UA-Bitness']?.includes(identity.bitness));
+  const cf = buildCanonicalFingerprint(fp, seed);
+  const headers = buildNetworkHeaders(fp, seed);
+  assert.ok(headers['Accept-Language']?.includes('en'));
+  assert.ok(!headers['Sec-CH-UA'], 'UA-CH must come from CDP, not extra headers');
+  assert.ok(cf.uaFullVersion.includes('136'));
 }
 
 function testEncryptionRoundTrip(): void {
@@ -61,6 +61,13 @@ function testEncryptionRoundTrip(): void {
   assert.equal(dec.toString(), plain.toString());
 }
 
+function testScryptPassphrase(): void {
+  const hash = hashPassphrase('secret');
+  assert.ok(hash.startsWith('v2:'));
+  assert.ok(verifyPassphrase(hash, 'secret'));
+  assert.ok(!verifyPassphrase(hash, 'wrong'));
+}
+
 function testTlsProfileAlignedToMajor(): void {
   const p = getTlsProfile('chrome136-win');
   assert.ok(p);
@@ -68,7 +75,8 @@ function testTlsProfileAlignedToMajor(): void {
 }
 
 testTlsFingerprintIsInteger();
-testClientHintsMatchIdentity();
+testCanonicalFingerprintHeaders();
 testEncryptionRoundTrip();
+testScryptPassphrase();
 testTlsProfileAlignedToMajor();
 console.log('test-core: all passed');

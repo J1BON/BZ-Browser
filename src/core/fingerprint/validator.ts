@@ -100,23 +100,30 @@ export async function validateFingerprintQuick(page: Page): Promise<ValidationRe
     detail: nativeMask ? 'toDataURL masked' : 'toDataURL hook exposed',
   });
 
-  const canvasStable = await page.evaluate(() => {
+  const canvasCrossPath = await page.evaluate(() => {
     try {
       const c = document.createElement('canvas');
       c.width = 64; c.height = 64;
       const ctx = c.getContext('2d');
       if (!ctx) return false;
+      ctx.fillStyle = '#f00';
       ctx.fillRect(0, 0, 64, 64);
-      return c.toDataURL() === c.toDataURL();
+      const img = ctx.getImageData(0, 0, 64, 64);
+      const url = c.toDataURL();
+      const c2 = document.createElement('canvas');
+      c2.width = 64; c2.height = 64;
+      const ctx2 = c2.getContext('2d')!;
+      ctx2.putImageData(img, 0, 0);
+      return c2.toDataURL() === url;
     } catch {
       return false;
     }
   }).catch(() => false);
 
   checks.push({
-    name: 'canvas_stable',
-    pass: canvasStable,
-    detail: canvasStable ? 'stable reads' : 'canvas mismatch across reads',
+    name: 'canvas_cross_path',
+    pass: canvasCrossPath,
+    detail: canvasCrossPath ? 'getImageData/toDataURL consistent' : 'read paths diverge',
   });
 
   const passed = checks.filter((c) => c.pass).length;

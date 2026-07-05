@@ -7,6 +7,7 @@ export interface TlsProfile {
   os: 'windows' | 'macos' | 'linux' | 'android' | 'ios';
   chromeMajor: string;
   ja3Hint: string;
+  /** Reference JA3 for documentation — real TLS fingerprint comes from patched binary + --fingerprint-seed */
   args: string[];
 }
 

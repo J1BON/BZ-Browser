@@ -5,7 +5,12 @@ import net from 'net';
 import type { BrowserProfile, LaunchResult, ProxyConfig } from '../../types/profile.js';
 import type { CdpEndpoint } from '../../types/phase4.js';
 import type { WarmupResult } from '../../types/warmup.js';
-import { buildFingerprintScript, buildLaunchArgs, buildExtraHeaders } from '../fingerprint/injection.js';
+import { buildFingerprintScript, buildLaunchArgs, buildNetworkHeaders } from '../fingerprint/injection.js';
+import {
+  buildCanonicalFingerprint,
+  canonicalToCdpUserAgentMetadata,
+  isIosOnChromium,
+} from '../fingerprint/canonical-fingerprint.js';
 import { resolveChromium, getChromiumInstallHint, checkTlsReadiness, isPatchedSource } from '../fingerprint/chromium-resolver.js';
 import { validateFingerprintQuick } from '../fingerprint/validator.js';
 import { validateFingerprintExternal, validateFingerprintQuickExternal } from '../fingerprint/external-validator.js';
@@ -61,6 +66,17 @@ async function findFreePort(start = 9222): Promise<number> {
   return start;
 }
 
+async function applyCdpUserAgentOverride(context: BrowserContext, profile: BrowserProfile): Promise<void> {
+  const cf = buildCanonicalFingerprint(profile.fingerprint, profile.fingerprintId);
+  const page = context.pages()[0] ?? await context.newPage();
+  const cdp = await context.newCDPSession(page);
+  await cdp.send('Network.enable');
+  await cdp.send('Network.setUserAgentOverride', {
+    userAgent: cf.ua,
+    userAgentMetadata: canonicalToCdpUserAgentMetadata(cf),
+  });
+}
+
 export class BrowserLauncher {
   private onProfileClose?: (profileId: string) => Promise<void>;
   private extensionLoader: ExtensionLoader | null = null;
@@ -77,7 +93,12 @@ export class BrowserLauncher {
     return runningContexts.get(profileId);
   }
 
-  async launch(profile: BrowserProfile, dataDir: string, proxyOverride?: ProxyConfig): Promise<LaunchResult> {
+  async launch(
+    profile: BrowserProfile,
+    dataDir: string,
+    proxyOverride?: ProxyConfig,
+    options?: { enableCdp?: boolean },
+  ): Promise<LaunchResult> {
     try {
       if (runningContexts.has(profile.id)) {
         const info = resolveChromium();
@@ -86,6 +107,15 @@ export class BrowserLauncher {
           profileId: profile.id,
           chromiumSource: info?.source,
           tlsReady: checkTlsReadiness(profile.fingerprint.sslFingerprint, info?.source ?? null).ready,
+        };
+      }
+
+      const fp = profile.fingerprint;
+      if (isIosOnChromium(fp)) {
+        return {
+          success: false,
+          profileId: profile.id,
+          error: 'iOS/Safari profiles cannot run on Chromium (engine mismatch). Use Android mobile instead.',
         };
       }
 
@@ -110,20 +140,17 @@ export class BrowserLauncher {
       }
 
       const activeProxy = proxyOverride ?? profile.proxy;
-      const fp = profile.fingerprint;
       const isMobile = fp.formFactor === 'mobile';
       const useNativeKernel = isPatchedSource(chromiumInfo.source);
-      const extraHeaders = {
-        ...buildExtraHeaders(fp, profile.fingerprintId),
-        'User-Agent': fp.userAgent,
-      };
+      const enableCdp = options?.enableCdp ?? profile.enableCdp ?? false;
 
-      const debugPort = await allocateDebugPort();
+      const args = [...buildLaunchArgs(profile, profile.fingerprintId)];
+      let debugPort: number | undefined;
 
-      const args = [
-        ...buildLaunchArgs(profile, profile.fingerprintId),
-        `--remote-debugging-port=${debugPort}`,
-      ];
+      if (enableCdp) {
+        debugPort = await allocateDebugPort();
+        args.push(`--remote-debugging-port=${debugPort}`);
+      }
 
       if (this.extensionLoader && profile.extensions.length > 0) {
         const extPaths = await this.extensionLoader.resolvePaths(profile.extensions);
@@ -147,10 +174,12 @@ export class BrowserLauncher {
           ? { latitude: fp.latitude, longitude: fp.longitude }
           : undefined,
         permissions: fp.latitude != null ? ['geolocation'] : [],
-        ignoreHTTPSErrors: true,
-        extraHTTPHeaders: extraHeaders,
+        ignoreHTTPSErrors: profile.ignoreHTTPSErrors ?? false,
+        extraHTTPHeaders: buildNetworkHeaders(fp, profile.fingerprintId),
         ...(proxy ? { proxy } : {}),
       });
+
+      await applyCdpUserAgentOverride(context, profile);
 
       await context.addInitScript({
         content: buildFingerprintScript(fp, profile.fingerprintId, activeProxy.ip, { useNativeKernel }),
@@ -167,7 +196,7 @@ export class BrowserLauncher {
       }
 
       runningContexts.set(profile.id, context);
-      cdpPorts.set(profile.id, debugPort);
+      if (debugPort != null) cdpPorts.set(profile.id, debugPort);
 
       context.on('close', async () => {
         runningContexts.delete(profile.id);
@@ -194,7 +223,7 @@ export class BrowserLauncher {
             return {
               success: false,
               profileId: profile.id,
-              error: `Detection score ${fpScore}% below minimum ${profile.minFpScore}% (worker/Sannysoft gate)`,
+              error: `Detection score ${fpScore}% below minimum ${profile.minFpScore}%`,
               fpScore,
             };
           }
@@ -209,6 +238,9 @@ export class BrowserLauncher {
         tlsReady: true,
         warmupStarted,
         fpScore,
+        antidetectWarnings: !useNativeKernel
+          ? ['Running degraded JS fallback — install patched fingerprint-chromium for best results']
+          : undefined,
       };
     } catch (err) {
       return {

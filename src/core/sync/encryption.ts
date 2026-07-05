@@ -1,4 +1,4 @@
-import { randomBytes, createCipheriv, createDecipheriv, scryptSync, createHash } from 'crypto';
+import { randomBytes, createCipheriv, createDecipheriv, scryptSync, createHash, timingSafeEqual } from 'crypto';
 
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 12;
@@ -40,9 +40,19 @@ export function hashString(data: string): string {
 }
 
 export function verifyPassphrase(storedHash: string, passphrase: string): boolean {
+  if (storedHash.startsWith('v2:')) {
+    const parts = storedHash.split(':');
+    if (parts.length !== 3) return false;
+    const salt = Buffer.from(parts[1], 'hex');
+    const expected = Buffer.from(parts[2], 'hex');
+    const derived = scryptSync(passphrase, salt, expected.length, { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
+    return expected.length === derived.length && timingSafeEqual(expected, derived);
+  }
   return hashString(passphrase) === storedHash;
 }
 
 export function hashPassphrase(passphrase: string): string {
-  return hashString(passphrase);
+  const salt = randomBytes(SALT_LENGTH);
+  const derived = scryptSync(passphrase, salt, KEY_LENGTH, { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
+  return `v2:${salt.toString('hex')}:${derived.toString('hex')}`;
 }

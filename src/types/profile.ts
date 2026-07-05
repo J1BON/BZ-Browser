@@ -91,6 +91,8 @@ export const BrowserProfileSchema = z.object({
   deletedAt: z.number().optional(),
   headless: z.boolean().default(false),
   minFpScore: z.number().min(0).max(100).default(0),
+  enableCdp: z.boolean().default(false),
+  ignoreHTTPSErrors: z.boolean().default(false),
   proxyPoolIds: z.array(z.string()).default([]),
 });
 

@@ -37,13 +37,6 @@ function pickDesktopOs(rng: () => number): DesktopOs {
   return 'Linux';
 }
 
-function pickMobileOs(rng: () => number, preferred?: DeviceType): 'iOS' | 'Android' {
-  if (preferred === 'iOS') return 'iOS';
-  if (preferred === 'Android') return 'Android';
-  // Android Chrome on Chromium = engine-consistent (best antidetect on desktop Chromium)
-  return rng() < 0.75 ? 'Android' : 'iOS';
-}
-
 function osToGeneratorKey(device: DesktopOs): 'windows' | 'macos' | 'linux' {
   if (device === 'MacOS') return 'macos';
   if (device === 'Linux') return 'linux';
@@ -153,17 +146,13 @@ export function computeDeviceSignature(fp: FingerprintConfig): string {
   return createHash('sha256').update(payload).digest('hex').slice(0, 16);
 }
 
-function generateMobileDevice(geo: GeoIpResult | undefined, deviceSeed: string, preferred?: DeviceType): FingerprintConfig {
-  const rng = seedRandom(deviceSeed);
-  const mobileOs = pickMobileOs(rng, preferred);
+function generateMobileDevice(geo: GeoIpResult | undefined, deviceSeed: string, _preferred?: DeviceType): FingerprintConfig {
+  const mobileOs = 'Android' as const;
   const locale = geo?.languages?.[0] ?? 'en-US';
-  const genOs = mobileOs === 'iOS' ? 'ios' : 'android';
 
   const { fingerprint } = fpGenMobile.getFingerprint({
-    browsers: mobileOs === 'iOS'
-      ? [{ name: 'safari', minVersion: 15 }]
-      : [{ name: 'chrome', minVersion: 120 }],
-    operatingSystems: [genOs],
+    browsers: [{ name: 'chrome', minVersion: 120 }],
+    operatingSystems: ['android'],
     devices: ['mobile'],
     locales: [locale],
     mockWebRTC: true,
@@ -186,10 +175,10 @@ function generateMobileDevice(geo: GeoIpResult | undefined, deviceSeed: string, 
   return {
     userAgent,
     browserVersion,
-    kernel: mobileOs === 'iOS' ? `Safari ${major}` : `Chrome ${major}`,
+    kernel: `Chrome ${major}`,
     device: mobileOs,
     formFactor: 'mobile',
-    touchPoints: mobileOs === 'iOS' ? 5 : seedInt(`${deviceSeed}:touch`, 5, 10),
+    touchPoints: seedInt(`${deviceSeed}:touch`, 5, 10),
     osVersion: osVersionLabel(mobileOs),
     tlsProfileId: pickTlsProfile(mobileOs, browserVersion).id,
     windowWidth: windowW,
@@ -203,7 +192,7 @@ function generateMobileDevice(geo: GeoIpResult | undefined, deviceSeed: string, 
     longitude: geo?.longitude,
     hardwareConcurrency: nav.hardwareConcurrency,
     deviceMemory: nav.deviceMemory ?? [4, 6, 8][seedInt(`${deviceSeed}:dm`, 0, 2)],
-    devicePixelRatio: screen.devicePixelRatio ?? (mobileOs === 'iOS' ? 3 : 2.625),
+    devicePixelRatio: screen.devicePixelRatio ?? 2.625,
     webGlMark: video.vendor,
     webGlMode: video.renderer,
     webGPUVendor: inferWebGpuVendor(video.vendor),

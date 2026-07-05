@@ -87,11 +87,25 @@ export class AutomationServer {
     return token.length > 0 && this.apiKeys.validate(token) !== null;
   }
 
+  private checkHost(req: http.IncomingMessage): boolean {
+    const host = req.headers.host ?? '';
+    if (!host.startsWith('127.0.0.1') && !host.startsWith('localhost')) return false;
+    const origin = req.headers.origin ?? '';
+    if (origin && !origin.startsWith('http://127.0.0.1') && !origin.startsWith('http://localhost')) {
+      return false;
+    }
+    return true;
+  }
+
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
       res.end();
       return;
+    }
+
+    if (!this.checkHost(req)) {
+      return json(res, 403, { error: 'Forbidden — API accepts loopback Host/Origin only' });
     }
 
     if (!this.checkAuth(req)) {
@@ -159,7 +173,10 @@ export class AutomationServer {
         profile = prepared.profile;
         profile.lastOpened = Date.now();
         await this.store.save(profile);
-        const result = await this.launcher.launch(profile, this.store.getDataDir(), prepared.activeProxy);
+        const rawBody = await readBody(req);
+        const body = rawBody ? JSON.parse(rawBody) as { enableCdp?: boolean } : {};
+        const enableCdp = body.enableCdp ?? true;
+        const result = await this.launcher.launch(profile, this.store.getDataDir(), prepared.activeProxy, { enableCdp });
         if (result.success) {
           await this.webhooks.dispatch('profile.launched', {
             profileId,
