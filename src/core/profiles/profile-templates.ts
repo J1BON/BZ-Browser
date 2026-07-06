@@ -5,25 +5,30 @@ import type { BrowserProfile, GeoIpResult } from '../../types/profile.js';
 export interface ProfileTemplate {
   id: string;
   name: string;
-  description: string;
-  category: 'desktop' | 'mobile' | 'social' | 'ads' | 'ecommerce';
-  options: DeviceGenerateOptions;
+  description?: string;
+  category?: 'desktop' | 'mobile' | 'social' | 'ads' | 'ecommerce';
+  options?: DeviceGenerateOptions;
   defaultGroup?: string;
   defaultTags?: string[];
   warmupPresetId?: string;
+  browserEngine?: 'chrome' | 'firefox';
+  osHint?: string;
 }
 
 export const PROFILE_TEMPLATES: ProfileTemplate[] = [
   { id: 'win-desktop', name: 'Windows Desktop', description: 'Standard Windows 10/11 Chrome', category: 'desktop', options: { formFactor: 'desktop', device: 'Windows' }, defaultGroup: 'Desktop' },
   { id: 'mac-desktop', name: 'macOS Desktop', description: 'MacBook Chrome profile', category: 'desktop', options: { formFactor: 'desktop', device: 'MacOS' }, defaultGroup: 'Desktop' },
   { id: 'linux-desktop', name: 'Linux Desktop', description: 'Ubuntu/Fedora Chrome', category: 'desktop', options: { formFactor: 'desktop', device: 'Linux' }, defaultGroup: 'Desktop' },
-  { id: 'iphone-17', name: 'iPhone 15 Pro', description: 'iOS Safari mobile', category: 'mobile', options: { formFactor: 'mobile', device: 'iOS' }, defaultGroup: 'Mobile', defaultTags: ['ios'] },
+  { id: 'iphone-17', name: 'iPhone 17 Pro', description: 'iOS Safari mobile', category: 'mobile', options: { formFactor: 'mobile', device: 'iOS' }, defaultGroup: 'Mobile', defaultTags: ['ios'] },
   { id: 'android-pixel', name: 'Android Pixel', description: 'Android Chrome mobile', category: 'mobile', options: { formFactor: 'mobile', device: 'Android' }, defaultGroup: 'Mobile', defaultTags: ['android'] },
   { id: 'fb-ads-win', name: 'Facebook Ads (Win)', description: 'Optimized for Meta ads', category: 'ads', options: { formFactor: 'desktop', device: 'Windows' }, defaultGroup: 'Facebook', defaultTags: ['facebook', 'ads'], warmupPresetId: 'social-warmup' },
   { id: 'google-ads-win', name: 'Google Ads (Win)', description: 'Optimized for Google Ads', category: 'ads', options: { formFactor: 'desktop', device: 'Windows' }, defaultGroup: 'Google', defaultTags: ['google', 'ads'], warmupPresetId: 'google-news' },
   { id: 'amazon-seller', name: 'Amazon Seller', description: 'E-commerce browsing pattern', category: 'ecommerce', options: { formFactor: 'desktop', device: 'Windows' }, defaultGroup: 'Amazon', defaultTags: ['amazon'], warmupPresetId: 'ecommerce-browse' },
   { id: 'tiktok-mobile', name: 'TikTok Mobile', description: 'Android mobile for social', category: 'social', options: { formFactor: 'mobile', device: 'Android' }, defaultGroup: 'TikTok', defaultTags: ['tiktok', 'social'], warmupPresetId: 'social-warmup' },
   { id: 'instagram-ios', name: 'Instagram iOS', description: 'iPhone for Instagram', category: 'social', options: { formFactor: 'mobile', device: 'iOS' }, defaultGroup: 'Instagram', defaultTags: ['instagram', 'social'], warmupPresetId: 'social-warmup' },
+  { id: 'firefox-win-136', name: 'Firefox 136 (Windows)', browserEngine: 'firefox' as const, osHint: 'Windows' },
+  { id: 'firefox-mac-136', name: 'Firefox 136 (macOS)', browserEngine: 'firefox' as const, osHint: 'Mac' },
+  { id: 'firefox-esr', name: 'Firefox ESR 128 (Windows)', browserEngine: 'firefox' as const, osHint: 'Windows' },
 ];
 
 export function getTemplate(id: string): ProfileTemplate | undefined {

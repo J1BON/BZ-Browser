@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { buildTlsLaunchArgs, getTlsProfile } from '../src/core/fingerprint/tls-profiles.js';
-import { buildNetworkHeaders } from '../src/core/fingerprint/injection.js';
+import { buildNetworkHeaders, buildKernelFingerprintArgs } from '../src/core/fingerprint/injection.js';
 import { buildCanonicalFingerprint } from '../src/core/fingerprint/canonical-fingerprint.js';
 import { encryptBuffer, decryptBuffer, hashPassphrase, verifyPassphrase } from '../src/core/sync/encryption.js';
 import type { FingerprintConfig } from '../src/types/profile.js';
@@ -74,9 +74,30 @@ function testTlsProfileAlignedToMajor(): void {
   assert.equal(p!.chromeMajor, '136');
 }
 
+function testKernelFlagsConsistency(): void {
+  const fp: FingerprintConfig = {
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.7000.42 Safari/537.36',
+    browserVersion: '136.0.7000.42',
+    kernel: 'Chrome 136', device: 'Windows', formFactor: 'desktop', touchPoints: 0,
+    osVersion: 'windows_10', tlsProfileId: 'chrome136-win', windowWidth: 1920, windowHeight: 1080,
+    screenLang: 'en-US', systemLang: 'en-US', timeZone: 'America/New_York',
+    canvas: '2', webGlImage: '2', webGlMeta: '2', webGPU: '2', audioContext: '2', clientRects: '2',
+    speechVoices: '2', mediaDevices: '2', webRTC: '2', fontEnable: '2', mac: '2', deviceName: '2',
+    doNotTrack: '3', sslFingerprint: '2', portScanProtection: '1', hardwareAccelerate: '1',
+  };
+  const cf = buildCanonicalFingerprint(fp, 'seed-xyz');
+  const args = buildKernelFingerprintArgs(cf, fp);
+  assert.ok(args.includes('--fingerprint-platform=windows'), 'kernel platform should be windows');
+  assert.ok(args.includes('--fingerprint-brand=Chrome'), 'kernel brand must be Chrome (not Chromium)');
+  assert.ok(args.some((a) => a === `--timezone=${fp.timeZone}`), 'kernel timezone must match profile timezone');
+  assert.ok(args.some((a) => a.startsWith('--fingerprint-hardware-concurrency=')), 'kernel hw concurrency must be set');
+  assert.ok(args.includes('--disable-non-proxied-udp'), 'webrtc protect should add non-proxied-udp kill');
+}
+
 testTlsFingerprintIsInteger();
 testCanonicalFingerprintHeaders();
 testEncryptionRoundTrip();
 testScryptPassphrase();
 testTlsProfileAlignedToMajor();
+testKernelFlagsConsistency();
 console.log('test-core: all passed');

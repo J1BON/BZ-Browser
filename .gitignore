@@ -10,7 +10,7 @@ build/chromium/
 credentials.json
 token.json
 google-token.json
-**/CloudAntidetect/
+**/BZBrowser/
 .cursor/
 *.zip
 .DS_Store

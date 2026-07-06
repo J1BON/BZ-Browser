@@ -4,6 +4,7 @@ import { pickChromeMajor, buildChromeVersion, DEFAULT_CHROME_MAJOR, CHROME_MAJOR
 import { FingerprintGenerator } from 'fingerprint-generator';
 import { v4 as uuidv4 } from 'uuid';
 import { seedInt, seedRandom } from './seed.js';
+import { pickDesktopFingerprintScreen, pickMobilePreset } from '../../utils/resolution.js';
 import type { FingerprintConfig, GeoIpResult } from '../../types/profile.js';
 
 export type DeviceType = FingerprintConfig['device'];
@@ -12,6 +13,7 @@ export type FormFactor = FingerprintConfig['formFactor'];
 export interface DeviceGenerateOptions {
   formFactor?: FormFactor;
   device?: DeviceType;
+  resolution?: { width: number; height: number };
 }
 
 const fpGenDesktop = new FingerprintGenerator({
@@ -78,6 +80,9 @@ function inferWebGpuVendor(vendor: string): string {
 function patchUserAgentVersion(ua: string, browserVersion: string, mobileOs: 'iOS' | 'Android' | DesktopOs): string {
   const major = browserVersion.split('.')[0] ?? DEFAULT_CHROME_MAJOR;
   if (mobileOs === 'iOS') {
+    if (/CriOS\//i.test(ua)) {
+      return ua.replace(/CriOS\/[\d.]+/, `CriOS/${browserVersion}`);
+    }
     return ua.replace(/Version\/[\d.]+/, `Version/${major}.0`).replace(/Safari\/[\d.]+/, 'Safari/605.1.15');
   }
   return ua.replace(/Chrome\/[\d.]+/, `Chrome/${browserVersion}`).replace(/Chromium\/[\d.]+/, `Chromium/${browserVersion}`);
@@ -111,7 +116,7 @@ function baseSpoofFields(deviceSeed: string, _mobile: boolean) {
     clientRects: '2' as const,
     speechVoices: '2' as const,
     mediaDevices: '2' as const,
-    webRTC: '2' as const,
+    webRTC: '3' as const,
     fontEnable: '2' as const,
     mac: '2' as const,
     macValue: randomMac(deviceSeed),
@@ -146,26 +151,27 @@ export function computeDeviceSignature(fp: FingerprintConfig): string {
   return createHash('sha256').update(payload).digest('hex').slice(0, 16);
 }
 
-function generateMobileDevice(geo: GeoIpResult | undefined, deviceSeed: string, _preferred?: DeviceType): FingerprintConfig {
-  const mobileOs = 'Android' as const;
+function generateMobileDevice(geo: GeoIpResult | undefined, deviceSeed: string, preferred?: DeviceType): FingerprintConfig {
+  const mobileOs: 'iOS' | 'Android' = preferred === 'iOS' ? 'iOS' : 'Android';
   const locale = geo?.languages?.[0] ?? 'en-US';
 
+  // iOS profiles on Chromium use Chrome mobile (CriOS-style UA), not Safari — Safari UA on
+  // Blink is an instant detection signal. Same engine as Android mobile emulation.
   const { fingerprint } = fpGenMobile.getFingerprint({
     browsers: [{ name: 'chrome', minVersion: 120 }],
-    operatingSystems: ['android'],
+    operatingSystems: [mobileOs === 'iOS' ? 'ios' : 'android'],
     devices: ['mobile'],
     locales: [locale],
     mockWebRTC: true,
   });
 
   const nav = fingerprint.navigator;
-  const screen = fingerprint.screen;
   const video = fingerprint.videoCard;
-
-  const screenW = screen.width;
-  const screenH = screen.height;
-  const windowW = screen.innerWidth || screenW;
-  const windowH = screen.innerHeight || screenH;
+  const preset = pickMobilePreset(deviceSeed, mobileOs);
+  const screenW = preset.width;
+  const screenH = preset.height;
+  const windowW = screenW;
+  const windowH = screenH;
 
   const browserMatch = nav.userAgent.match(/(?:Chrome|Version)\/([\d.]+)/);
   const browserVersion = resolveBrowserVersion(deviceSeed, browserMatch?.[1]);
@@ -192,7 +198,7 @@ function generateMobileDevice(geo: GeoIpResult | undefined, deviceSeed: string, 
     longitude: geo?.longitude,
     hardwareConcurrency: nav.hardwareConcurrency,
     deviceMemory: nav.deviceMemory ?? [4, 6, 8][seedInt(`${deviceSeed}:dm`, 0, 2)],
-    devicePixelRatio: screen.devicePixelRatio ?? 2.625,
+    devicePixelRatio: preset.devicePixelRatio,
     webGlMark: video.vendor,
     webGlMode: video.renderer,
     webGPUVendor: inferWebGpuVendor(video.vendor),
@@ -202,7 +208,8 @@ function generateMobileDevice(geo: GeoIpResult | undefined, deviceSeed: string, 
   };
 }
 
-function generateDesktopDevice(geo: GeoIpResult | undefined, deviceSeed: string, preferred?: DeviceType): FingerprintConfig {
+function generateDesktopDevice(geo: GeoIpResult | undefined, deviceSeed: string, options?: DeviceGenerateOptions): FingerprintConfig {
+  const preferred = options?.device;
   const rng = seedRandom(deviceSeed);
   const device: DesktopOs = preferred === 'MacOS' || preferred === 'Linux' || preferred === 'Windows'
     ? preferred
@@ -218,13 +225,14 @@ function generateDesktopDevice(geo: GeoIpResult | undefined, deviceSeed: string,
   });
 
   const nav = fingerprint.navigator;
-  const screen = fingerprint.screen;
   const video = fingerprint.videoCard;
-
-  const screenW = screen.width;
-  const screenH = screen.height;
-  const windowW = Math.min(screen.innerWidth || screenW - 80, screenW);
-  const windowH = Math.min(screen.innerHeight || screenH - 60, screenH);
+  const screen = fingerprint.screen;
+  const { width: screenW, height: screenH } = options?.resolution
+    ? options.resolution
+    : pickDesktopFingerprintScreen(deviceSeed);
+  // Launch window size is computed at open time from the user's display — not fingerprint screen.
+  const windowW = Math.min(screenW, 1280);
+  const windowH = Math.min(screenH, 800);
 
   const chromeMatch = nav.userAgent.match(/Chrome\/([\d.]+)/);
   const browserVersion = resolveBrowserVersion(deviceSeed, chromeMatch?.[1]);
@@ -282,7 +290,7 @@ export function generateUniqueDevice(
   if (formFactor === 'mobile') {
     return generateMobileDevice(geo, deviceSeed, options?.device);
   }
-  return generateDesktopDevice(geo, deviceSeed, options?.device);
+  return generateDesktopDevice(geo, deviceSeed, options);
 }
 
 export function regenerateDeviceFingerprint(

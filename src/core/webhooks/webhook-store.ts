@@ -1,7 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { createHmac, randomBytes } from 'crypto';
-import { fetch } from 'undici';
 
 export type WebhookEvent =
   | 'profile.closed'
@@ -41,14 +40,17 @@ export class WebhookStore {
     try {
       const raw = await fs.readFile(this.filePath, 'utf-8');
       this.hooks = JSON.parse(raw) as WebhookConfig[];
-    } catch {
+    } catch (err) {
+      console.warn('[WebhookStore] webhooks.json corrupt:', (err as Error).message, '— backing up and starting fresh');
+      await fs.rename(this.filePath, this.filePath + '.corrupt').catch(() => {});
       this.hooks = [];
-      await this.save();
     }
   }
 
   async save(): Promise<void> {
-    await fs.writeFile(this.filePath, JSON.stringify(this.hooks, null, 2));
+    const tmp = this.filePath + '.tmp';
+    await fs.writeFile(tmp, JSON.stringify(this.hooks, null, 2));
+    await fs.rename(tmp, this.filePath);
   }
 
   list(): WebhookConfig[] {
@@ -56,6 +58,10 @@ export class WebhookStore {
   }
 
   async create(url: string, events: WebhookEvent[], secret?: string): Promise<WebhookConfig> {
+    const parsedUrl = new URL(url);
+    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+      throw new Error('Webhook URL must use http or https protocol');
+    }
     const hook: WebhookConfig = {
       id: randomBytes(8).toString('hex'),
       url,
@@ -95,13 +101,20 @@ export class WebhookStore {
     const targets = this.hooks.filter((h) => h.enabled && h.events.includes(event));
     const results: WebhookDeliveryResult[] = [];
 
-    for (const hook of targets) {
-      const result = await this.deliver(hook, body, event);
+    const deliveries = targets.map(async (hook) => {
+      const result = await this.deliver(hook, body, event).catch((err) => ({
+        webhookId: hook.id,
+        url: hook.url,
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      }));
       results.push(result);
       hook.lastTriggeredAt = Date.now();
       hook.lastStatus = result.success ? 'ok' : 'error';
       hook.lastError = result.error;
-    }
+    });
+
+    await Promise.all(deliveries);
 
     if (targets.length > 0) await this.save();
     return results;
@@ -113,9 +126,9 @@ export class WebhookStore {
     const body = JSON.stringify({
       event: 'test.ping',
       timestamp: Date.now(),
-      data: { message: 'Cloud Antidetect Browser webhook test' },
+      data: { message: 'BZ Browser webhook test' },
     });
-    const result = await this.deliver(hook, body, 'profile.closed');
+    const result = await this.deliver(hook, body, 'profile.opened' as WebhookEvent);
     hook.lastTriggeredAt = Date.now();
     hook.lastStatus = result.success ? 'ok' : 'error';
     hook.lastError = result.error;
@@ -127,7 +140,7 @@ export class WebhookStore {
     try {
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
-        'User-Agent': 'CloudAntidetect-Webhook/1.0',
+        'User-Agent': 'BZBrowser-Webhook/1.0',
         'X-CAB-Event': event,
       };
       if (hook.secret) {

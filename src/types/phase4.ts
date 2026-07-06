@@ -21,8 +21,17 @@ export interface ProxyHealthResult {
   latencyMs: number;
   exitIp?: string;
   country?: string;
+  countryCode?: string;
   city?: string;
   timezone?: string;
+  isp?: string;
+  org?: string;
+  asn?: string;
+  asnName?: string;
+  isMobile?: boolean;
+  isProxy?: boolean;
+  isHosting?: boolean;
+  riskScore?: number;
   error?: string;
 }
 

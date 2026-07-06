@@ -12,7 +12,7 @@ export async function resolveLaunchProxy(
 ): Promise<{ proxy: ProxyConfig; savedId?: string }> {
   const base = { ...profile.proxy };
 
-  if (base.rotationMode !== 'off' && profile.proxyPoolIds.length > 0) {
+  if (base.rotationMode !== 'off' && (profile.proxyPoolIds?.length ?? 0) > 0) {
     const pool: SavedProxy[] = [];
     for (const id of profile.proxyPoolIds) {
       const saved = await proxyManager.get(id);
@@ -47,12 +47,14 @@ export async function alignProfileWithProxyIp(
 ): Promise<BrowserProfile> {
   const geo = await lookupGeoFromIp(exitIp);
   if (!geo) return profile;
-  profile.fingerprint = alignFingerprintWithGeo(profile.fingerprint, geo);
-  profile.proxy.ip = exitIp;
-  profile.proxy.country = geo.country;
-  profile.proxy.city = geo.city;
-  profile.proxy.timezone = geo.timezone;
-  return profile;
+  const cloned = structuredClone(profile);
+  cloned.fingerprint = alignFingerprintWithGeo(cloned.fingerprint, geo);
+  cloned.proxy.ip = exitIp;
+  cloned.proxy.country = geo.country;
+  cloned.proxy.city = geo.city;
+  cloned.proxy.timezone = geo.timezone;
+  cloned.proxy.riskScore = geo.riskScore;
+  return cloned;
 }
 
 export async function prepareProfileForLaunch(

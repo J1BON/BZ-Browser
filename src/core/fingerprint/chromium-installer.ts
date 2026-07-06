@@ -1,8 +1,7 @@
 import fs from 'fs';
 import fsPromises from 'fs/promises';
 import path from 'path';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
+import os from 'os';
 import extract from 'extract-zip';
 import {
   getDefaultChromiumInstallDir,
@@ -17,24 +16,67 @@ import {
   type ChromiumVersionCheck,
 } from './chromium-manifest.js';
 
-const execFileAsync = promisify(execFile);
-
 const GITHUB_REPO = CHROMIUM_MANIFEST.repo;
 
+function buildDirectAsset(tag: string): { url: string; name: string } | null {
+  if (process.platform === 'win32') {
+    const name = `ungoogled-chromium_${tag}-1.1_windows_x64.zip`;
+    return {
+      name,
+      url: `https://github.com/${GITHUB_REPO}/releases/download/${tag}/${name}`,
+    };
+  }
+  if (process.platform === 'darwin') {
+    const name = `ungoogled-chromium_${tag}-1.1_macos.dmg`;
+    return {
+      name,
+      url: `https://github.com/${GITHUB_REPO}/releases/download/${tag}/${name}`,
+    };
+  }
+  if (process.platform === 'linux') {
+    const name = `ungoogled-chromium-${tag}-1-x86_64_linux.tar.xz`;
+    return {
+      name,
+      url: `https://github.com/${GITHUB_REPO}/releases/download/${tag}/${name}`,
+    };
+  }
+  return null;
+}
+
 async function getReleaseAsset(tag: string): Promise<{ url: string; name: string } | null> {
-  const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${tag}`, {
-    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'CloudAntidetectBrowser' },
-  });
-  if (!res.ok) return null;
-  const data = await res.json() as {
-    assets: { name: string; browser_download_url: string }[];
-  };
-  return pickPlatformAsset(data.assets);
+  try {
+    const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${tag}`, {
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'BZBrowser' },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (res.ok) {
+      const data = await res.json() as {
+        assets: { name: string; browser_download_url: string }[];
+      };
+      const picked = pickPlatformAsset(data.assets);
+      if (picked) return picked;
+    }
+  } catch {
+    // fall through to direct URL
+  }
+  return buildDirectAsset(tag);
 }
 
 function pickPlatformAsset(assets: { name: string; browser_download_url: string }[]): { url: string; name: string } | null {
   const platform = process.platform;
   const asset = assets.find((a) => {
+    const n = a.name.toLowerCase();
+    if (platform === 'win32') {
+      return n.includes('windows_x64') && n.endsWith('.zip');
+    }
+    if (platform === 'darwin') {
+      return (n.includes('macos') || n.includes('darwin')) && n.endsWith('.zip');
+    }
+    if (platform === 'linux') {
+      return n.includes('linux') && n.endsWith('.zip');
+    }
+    return false;
+  }) ?? assets.find((a) => {
     const n = a.name.toLowerCase();
     if (platform === 'win32') return n.includes('win') && (n.endsWith('.zip') || n.endsWith('.7z'));
     if (platform === 'darwin') return (n.includes('mac') || n.includes('darwin')) && n.endsWith('.zip');
@@ -49,7 +91,7 @@ async function getLatestReleaseAsset(): Promise<{ url: string; name: string; tag
   if (pinned) return { ...pinned, tag: CHROMIUM_MANIFEST.pinnedTag };
 
   const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
-    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'CloudAntidetectBrowser' },
+    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'BZBrowser' },
   });
   if (!res.ok) return null;
   const data = await res.json() as {
@@ -83,19 +125,18 @@ async function findChromeExe(dir: string): Promise<string | null> {
   return null;
 }
 
-async function copyBroearnChromium(installDir: string): Promise<string | null> {
-  const broearnPaths = [
-    path.join(process.env.LOCALAPPDATA ?? '', 'BroearnBrowser', 'chrome.exe'),
-    path.join(process.env.LOCALAPPDATA ?? '', 'BroearnBrowser', 'Application', 'chrome.exe'),
-  ];
-  for (const src of broearnPaths) {
-    if (!fs.existsSync(src)) continue;
-    await fsPromises.mkdir(installDir, { recursive: true });
-    const dest = path.join(installDir, getChromiumExecutableName());
-    await fsPromises.copyFile(src, dest);
-    return dest;
+async function copyDirRecursive(src: string, dest: string): Promise<void> {
+  await fsPromises.mkdir(dest, { recursive: true });
+  const entries = await fsPromises.readdir(src, { withFileTypes: true });
+  for (const entry of entries) {
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      await copyDirRecursive(srcPath, destPath);
+    } else if (entry.isFile()) {
+      await fsPromises.copyFile(srcPath, destPath);
+    }
   }
-  return null;
 }
 
 export async function installPatchedChromium(
@@ -103,13 +144,6 @@ export async function installPatchedChromium(
 ): Promise<ChromiumInstallResult> {
   const installDir = getDefaultChromiumInstallDir();
   await fsPromises.mkdir(installDir, { recursive: true });
-
-  onProgress?.('Checking for Broearn patched Chromium...');
-  const broearnCopy = await copyBroearnChromium(installDir);
-  if (broearnCopy) {
-    onProgress?.('Copied Broearn patched Chromium');
-    return { success: true, path: broearnCopy };
-  }
 
   onProgress?.(`Fetching fingerprint-chromium ${CHROMIUM_MANIFEST.pinnedTag} (pinned)...`);
   const asset = await getLatestReleaseAsset();
@@ -127,7 +161,7 @@ export async function installPatchedChromium(
     };
   }
 
-  const tmpZip = path.join(installDir, asset.name);
+  const tmpZip = path.join(os.tmpdir(), `bz-chromium-${asset.tag}.zip`);
   onProgress?.(`Downloading ${asset.name} (${asset.tag})...`);
   const res = await fetch(asset.url);
   if (!res.ok) {
@@ -136,8 +170,8 @@ export async function installPatchedChromium(
   const buf = Buffer.from(await res.arrayBuffer());
   await fsPromises.writeFile(tmpZip, buf);
 
-  const extractDir = path.join(installDir, '_extract');
-  await fsPromises.rm(extractDir, { recursive: true, force: true });
+  const extractDir = path.join(os.tmpdir(), `bz-chromium-extract-${Date.now()}`);
+  await fsPromises.rm(extractDir, { recursive: true, force: true }).catch(() => {});
   await fsPromises.mkdir(extractDir, { recursive: true });
 
   onProgress?.('Extracting...');
@@ -146,37 +180,38 @@ export async function installPatchedChromium(
 
   const chromeExe = await findChromeExe(extractDir);
   if (!chromeExe) {
+    await fsPromises.rm(extractDir, { recursive: true, force: true }).catch(() => {});
     return { success: false, error: 'chrome.exe not found in downloaded archive' };
   }
 
-  const dest = path.join(installDir, getChromiumExecutableName());
-  await fsPromises.copyFile(chromeExe, dest);
-
-  // Copy adjacent DLLs/resources
   const chromeDir = path.dirname(chromeExe);
-  const siblings = await fsPromises.readdir(chromeDir);
-  for (const s of siblings) {
-    const src = path.join(chromeDir, s);
-    const stat = await fsPromises.stat(src);
-    if (stat.isFile()) {
-      await fsPromises.copyFile(src, path.join(installDir, s)).catch(() => {});
-    }
-  }
-
+  const stagingDir = path.join(os.tmpdir(), `bz-chromium-staging-${Date.now()}`);
+  await copyDirRecursive(chromeDir, stagingDir);
+  await fsPromises.rm(installDir, { recursive: true, force: true }).catch(() => {});
+  await fsPromises.mkdir(installDir, { recursive: true });
+  await copyDirRecursive(stagingDir, installDir);
+  await fsPromises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
   await fsPromises.rm(extractDir, { recursive: true, force: true }).catch(() => {});
   onProgress?.('Patched Chromium installed');
 
-  let version: string | undefined;
-  try {
-    const { stdout } = await execFileAsync(dest, ['--version']);
-    version = stdout.trim();
-  } catch {
-    // ignore
+  const dest = path.join(installDir, getChromiumExecutableName());
+  if (!fs.existsSync(dest)) {
+    return { success: false, error: 'chrome.exe missing after install copy' };
   }
+
+  const localesDir = path.join(installDir, 'locales');
+  const localeFiles = fs.existsSync(localesDir) ? fs.readdirSync(localesDir).filter((f) => f.endsWith('.pak')) : [];
+  if (localeFiles.length === 0) {
+    return { success: false, error: 'Chromium install incomplete (missing locale files). Try again.' };
+  }
+
+  // Use the pinned release tag as the version. Never run `chrome.exe --version`:
+  // on Windows the patched fingerprint-chromium ignores it and opens a browser window.
+  const version = asset.tag;
 
   await writeChromiumInstallRecord(installDir, {
     tag: asset.tag,
-    version: version ?? '',
+    version,
     installedAt: Date.now(),
     path: dest,
   });
@@ -217,8 +252,8 @@ export async function getChromiumInstallStatus() {
     installed: !!info,
     path: info?.path ?? null,
     source: info?.source ?? null,
-    isPatched: info ? info.source !== 'chrome' : false,
-    tlsReady: info ? info.source !== 'chrome' : false,
+    isPatched: info?.source === 'fingerprint-chromium',
+    tlsReady: info?.source === 'fingerprint-chromium',
     version: info?.version ?? null,
     installDir,
     installedAtDefault,

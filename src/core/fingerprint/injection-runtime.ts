@@ -61,31 +61,40 @@ export function buildInjectionRuntimeScript(fpJson: string, options: RuntimeOpti
   if (FP.canvasNoise) {
     var origToDataURL = HTMLCanvasElement.prototype.toDataURL;
     var origToBlob = HTMLCanvasElement.prototype.toBlob;
+    var nativeGetImageData = CanvasRenderingContext2D.prototype.getImageData;
+
     HTMLCanvasElement.prototype.toDataURL = maskNative(function() {
       var self = this;
       var ctx = self.getContext('2d');
       if (ctx && self.width && self.height) {
-        var img = readNoisedImageData(ctx, 0, 0, self.width, self.height);
-        var backup = new Uint8ClampedArray(img.data);
-        ctx.putImageData(img, 0, 0);
-        try { return origToDataURL.apply(self, arguments); } finally {
-          img.data.set(backup);
-          ctx.putImageData(img, 0, 0);
-        }
+        try {
+          var originalImg = nativeGetImageData.call(ctx, 0, 0, self.width, self.height);
+          var backup = new Uint8ClampedArray(originalImg.data);
+          var noisedImg = readNoisedImageData(ctx, 0, 0, self.width, self.height);
+          ctx.putImageData(noisedImg, 0, 0);
+          var res = origToDataURL.apply(self, arguments);
+          originalImg.data.set(backup);
+          ctx.putImageData(originalImg, 0, 0);
+          return res;
+        } catch (e) {}
       }
       return origToDataURL.apply(self, arguments);
     }, 'toDataURL');
+
     HTMLCanvasElement.prototype.toBlob = maskNative(function() {
       var self = this;
       var ctx = self.getContext('2d');
       if (ctx && self.width && self.height) {
-        var img = readNoisedImageData(ctx, 0, 0, self.width, self.height);
-        var backup = new Uint8ClampedArray(img.data);
-        ctx.putImageData(img, 0, 0);
-        try { return origToBlob.apply(self, arguments); } finally {
-          img.data.set(backup);
-          ctx.putImageData(img, 0, 0);
-        }
+        try {
+          var originalImg = nativeGetImageData.call(ctx, 0, 0, self.width, self.height);
+          var backup = new Uint8ClampedArray(originalImg.data);
+          var noisedImg = readNoisedImageData(ctx, 0, 0, self.width, self.height);
+          ctx.putImageData(noisedImg, 0, 0);
+          var res = origToBlob.apply(self, arguments);
+          originalImg.data.set(backup);
+          ctx.putImageData(originalImg, 0, 0);
+          return res;
+        } catch (e) {}
       }
       return origToBlob.apply(self, arguments);
     }, 'toBlob');

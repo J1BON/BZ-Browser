@@ -1,6 +1,8 @@
 import { app, ipcMain, BrowserWindow } from 'electron';
-import { autoUpdater } from 'electron-updater';
+import electronUpdater from 'electron-updater';
 import type { UpdateInfo as ElectronUpdateInfo, ProgressInfo } from 'electron-updater';
+
+const { autoUpdater } = electronUpdater;
 
 export interface UpdateState {
   status: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error';

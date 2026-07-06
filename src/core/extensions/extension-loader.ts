@@ -1,10 +1,12 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { ExtensionEntrySchema, type ExtensionEntry } from '../../types/phase4.js';
+import { joinChromeExtensionArgs } from '../browser/chrome-path.js';
 
 export class ExtensionLoader {
   private extensionsDir: string;
   private registryPath: string;
+  private writeLock: Promise<void> = Promise.resolve();
 
   constructor(dataDir: string) {
     this.extensionsDir = path.join(dataDir, 'extensions');
@@ -20,28 +22,42 @@ export class ExtensionLoader {
     }
   }
 
+  getExtensionsDir(): string {
+    return this.extensionsDir;
+  }
+
   async list(): Promise<ExtensionEntry[]> {
-    const raw = JSON.parse(await fs.readFile(this.registryPath, 'utf-8')) as { extensions: ExtensionEntry[] };
-    return raw.extensions;
+    try {
+      const raw = JSON.parse(await fs.readFile(this.registryPath, 'utf-8')) as { extensions: ExtensionEntry[] };
+      return Array.isArray(raw?.extensions) ? raw.extensions : [];
+    } catch (err) {
+      console.warn('[ExtensionLoader] registry.json unreadable:', (err as Error).message);
+      return [];
+    }
   }
 
   async register(entry: ExtensionEntry): Promise<ExtensionEntry[]> {
-    const validated = ExtensionEntrySchema.parse(entry);
-    const all = await this.list();
-    const idx = all.findIndex((e) => e.id === validated.id);
-    if (idx >= 0) all[idx] = validated;
-    else all.push(validated);
-    await fs.writeFile(this.registryPath, JSON.stringify({ extensions: all }, null, 2));
-    return all;
+    this.writeLock = this.writeLock.then(async () => {
+      const validated = ExtensionEntrySchema.parse(entry);
+      const all = await this.list();
+      const idx = all.findIndex((e) => e.id === validated.id);
+      if (idx >= 0) all[idx] = validated;
+      else all.push(validated);
+      await fs.writeFile(this.registryPath, JSON.stringify({ extensions: all }, null, 2));
+    }).catch(() => {});
+    return this.writeLock.then(() => this.list());
   }
 
   async remove(id: string): Promise<ExtensionEntry[]> {
-    const all = (await this.list()).filter((e) => e.id !== id);
-    await fs.writeFile(this.registryPath, JSON.stringify({ extensions: all }, null, 2));
-    return all;
+    this.writeLock = this.writeLock.then(async () => {
+      const all = (await this.list()).filter((e) => e.id !== id);
+      await fs.writeFile(this.registryPath, JSON.stringify({ extensions: all }, null, 2));
+      const extDir = path.join(this.extensionsDir, id);
+      await fs.rm(extDir, { recursive: true, force: true }).catch(() => {});
+    }).catch(() => {});
+    return this.writeLock.then(() => this.list());
   }
 
-  /** Resolve extension paths for a profile's extension ID list */
   async resolvePaths(extensionIds: string[]): Promise<string[]> {
     const registry = await this.list();
     const paths: string[] = [];
@@ -52,22 +68,40 @@ export class ExtensionLoader {
           await fs.access(entry.path);
           paths.push(entry.path);
         } catch {
-          // skip missing
+          console.warn(`[ExtensionLoader] Extension ${id} path missing or unreadable — skipping`);
         }
       }
     }
     return paths;
   }
 
-  async importUnpacked(sourcePath: string, name?: string): Promise<ExtensionEntry[]> {
+  private async copyDirRecursive(src: string, dest: string): Promise<void> {
+    await fs.mkdir(dest, { recursive: true });
+    const entries = await fs.readdir(src, { withFileTypes: true });
+    for (const entry of entries) {
+      const srcPath = path.join(src, entry.name);
+      const destPath = path.join(dest, entry.name);
+      if (entry.isDirectory()) {
+        await this.copyDirRecursive(srcPath, destPath);
+      } else {
+        await fs.copyFile(srcPath, destPath);
+      }
+    }
+  }
+
+  async importUnpacked(sourcePath: string, name?: string, stableId?: string): Promise<ExtensionEntry[]> {
     const manifestPath = path.join(sourcePath, 'manifest.json');
     const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8')) as { name?: string; version?: string };
-    const id = path.basename(sourcePath).slice(0, 32) || manifest.name?.replace(/\s/g, '_') || 'ext';
+    const id = stableId ?? (path.basename(sourcePath).slice(0, 32) || manifest.name?.replace(/\s/g, '_') || `ext-${Date.now()}`);
+    const destPath = path.join(this.extensionsDir, id);
+
+    await fs.rm(destPath, { recursive: true, force: true }).catch(() => {});
+    await this.copyDirRecursive(sourcePath, destPath);
 
     const entry: ExtensionEntry = {
       id,
       name: name ?? manifest.name ?? id,
-      path: sourcePath,
+      path: destPath,
       version: manifest.version,
       enabled: true,
     };
@@ -75,38 +109,7 @@ export class ExtensionLoader {
     return this.register(entry);
   }
 
-  /** Scan Broearn unpacked extensions folder */
-  async importFromBroearn(broearnExtDir: string): Promise<number> {
-    let count = 0;
-    try {
-      const entries = await fs.readdir(broearnExtDir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
-        const extRoot = path.join(broearnExtDir, entry.name);
-        try {
-          const versions = await fs.readdir(extRoot);
-          for (const ver of versions) {
-            const full = path.join(extRoot, ver);
-            const stat = await fs.stat(full);
-            if (stat.isDirectory()) {
-              await this.importUnpacked(full, entry.name);
-              count++;
-              break;
-            }
-          }
-        } catch {
-          await this.importUnpacked(extRoot, entry.name).catch(() => {});
-          count++;
-        }
-      }
-    } catch {
-      // ignore
-    }
-    return count;
-  }
-
   buildChromeArgs(extensionPaths: string[]): string[] {
-    if (extensionPaths.length === 0) return [];
-    return [`--load-extension=${extensionPaths.join(',')}`];
+    return joinChromeExtensionArgs(extensionPaths);
   }
 }

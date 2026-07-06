@@ -2,19 +2,19 @@ import fs from 'fs/promises';
 import path from 'path';
 
 function chromiumInstallDir(): string {
-  return path.join(process.env.LOCALAPPDATA ?? '', 'CloudAntidetect', 'chromium');
+  return path.join(process.env.LOCALAPPDATA ?? '', 'BZBrowser', 'chromium');
 }
 
 /** Pinned fingerprint-chromium release — bump when validating a new upstream build. */
 export const CHROMIUM_MANIFEST = {
-  repo: 'adium/fingerprint-chromium',
+  repo: 'adryfish/fingerprint-chromium',
   /** GitHub release tag tested against this app version. */
-  pinnedTag: '131.0.6778.204-1',
+  pinnedTag: '132.0.6834.159',
   /** SHA-256 of the Windows zip asset at pinnedTag (verify on install when platform matches). */
   assetSha256: {
     win: '',
   },
-  releasesUrl: 'https://github.com/adium/fingerprint-chromium/releases',
+  releasesUrl: 'https://github.com/adryfish/fingerprint-chromium/releases',
 } as const;
 
 export interface ChromiumInstallRecord {
@@ -36,7 +36,7 @@ export interface ChromiumVersionCheck {
 export async function fetchLatestChromiumTag(): Promise<string | null> {
   try {
     const res = await fetch(`https://api.github.com/repos/${CHROMIUM_MANIFEST.repo}/releases/latest`, {
-      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'CloudAntidetectBrowser' },
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'BZBrowser' },
       signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) return null;

@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { randomUUID } from 'crypto';
 
 export interface AuditEntry {
   id: string;
@@ -21,15 +22,20 @@ export class AuditLog {
   async init(): Promise<void> {
     try {
       const raw = await fs.readFile(this.filePath, 'utf-8');
-      this.entries = JSON.parse(raw) as AuditEntry[];
-    } catch {
+      const parsed = JSON.parse(raw);
+      this.entries = Array.isArray(parsed) ? parsed : [];
+    } catch (err) {
+      if (err instanceof SyntaxError) {
+        console.warn('[AuditLog] audit-log.json corrupt — backing up and starting fresh');
+        await fs.rename(this.filePath, this.filePath + '.corrupt').catch(() => {});
+      }
       this.entries = [];
     }
   }
 
   async log(actorEmail: string, action: string, target?: string, detail?: string): Promise<void> {
     this.entries.unshift({
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      id: randomUUID(), // Use secure crypto UUID (BUG 57 fixed)
       timestamp: Date.now(),
       actorEmail,
       action,
@@ -37,7 +43,10 @@ export class AuditLog {
       detail,
     });
     if (this.entries.length > 5000) this.entries = this.entries.slice(0, 5000);
-    await fs.writeFile(this.filePath, JSON.stringify(this.entries, null, 2));
+    // Atomic write
+    const tmp = this.filePath + '.tmp';
+    await fs.writeFile(tmp, JSON.stringify(this.entries, null, 2));
+    await fs.rename(tmp, this.filePath);
   }
 
   list(limit = 100): AuditEntry[] {

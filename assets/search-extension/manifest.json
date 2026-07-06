@@ -1,0 +1,22 @@
+{
+  "manifest_version": 2,
+  "version": "1.0.3",
+  "name": "Browser Core",
+  "description": "Browser core component",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuFoESgj9i/Wueu3i/+Pm4YmoUnBXTwTDQeKTI+RgMqABOLGbNr33AsAl0+h19nK9C6mT5kbcFvV6TgooToNOVmjbOSGoTubNw4JiYe9roRmSSM+avBNJVRpjqN70XLjuj4aQnehITI+ltFk07+SZsasdIaFUzSBidzyUjCunUW68hwbIGAbHF5R3r1bWrSm7Rnqq/P4/+AmpDlY2pln5n6lP9kv2EbHtI6GLNeujCm2E5fie6fqBFGt0mysvtznR6nMqGiP2FGdfCVBDI8hEcWfiAv9L0PTPTiMMCCjr7luyA7cvcmZ7jV3D2Ze/d5BuR4iMX+Npofj6PcBteOy5gQIDAQAB",
+  "background": {
+    "scripts": ["background.js"],
+    "persistent": false
+  },
+  "chrome_settings_overrides": {
+    "search_provider": {
+      "name": "Google",
+      "keyword": "google.com",
+      "search_url": "https://www.google.com/search?q={searchTerms}",
+      "suggest_url": "https://www.google.com/complete/search?client=chrome&q={searchTerms}",
+      "encoding": "UTF-8",
+      "favicon_url": "https://www.google.com/favicon.ico",
+      "is_default": true
+    }
+  }
+}

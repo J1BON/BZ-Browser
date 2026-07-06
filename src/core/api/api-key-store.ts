@@ -31,7 +31,9 @@ export class ApiKeyStore {
   }
 
   async save(): Promise<void> {
-    await fs.writeFile(this.filePath, JSON.stringify(this.keys, null, 2));
+    const tmp = this.filePath + '.tmp';
+    await fs.writeFile(tmp, JSON.stringify(this.keys, null, 2));
+    await fs.rename(tmp, this.filePath);
   }
 
   hashKey(key: string): string {

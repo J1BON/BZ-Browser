@@ -15,6 +15,7 @@ export const ProxyConfigSchema = z.object({
   city: z.string().optional(),
   timezone: z.string().optional(),
   ip: z.string().optional(),
+  riskScore: z.number().optional(),
   rotationMode: z.enum(['off', 'session', 'random']).default('off'),
   poolId: z.string().optional(),
 });
@@ -94,6 +95,8 @@ export const BrowserProfileSchema = z.object({
   enableCdp: z.boolean().default(false),
   ignoreHTTPSErrors: z.boolean().default(false),
   proxyPoolIds: z.array(z.string()).default([]),
+  serialNumber: z.number().int().positive().optional(),
+  browserEngine: z.enum(['chrome', 'firefox']).default('chrome'),
 });
 
 export type ProxyConfig = z.infer<typeof ProxyConfigSchema>;
@@ -171,9 +174,22 @@ export interface GeoIpResult {
   ip: string;
   country: string;
   countryCode: string;
+  flag?: string;
+  region?: string;
   city: string;
+  zip?: string;
   latitude: number;
   longitude: number;
   timezone: string;
   languages: string[];
+  isp?: string;
+  org?: string;
+  asn?: string;
+  asnName?: string;
+  isMobile?: boolean;
+  isProxy?: boolean;
+  isHosting?: boolean;
+  riskScore?: number;
+  latencyMs?: number;
+  source?: string;
 }

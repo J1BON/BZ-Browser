@@ -22,10 +22,13 @@ export interface ConflictResolutionResult {
 export function resolveSyncConflict(
   local: BrowserProfile,
   localMeta: ProfileSyncMeta | null,
-  remote: BrowserProfile,
+  remote: BrowserProfile | null,
   remoteMeta: ProfileSyncMeta | null,
   resolution?: ConflictResolution,
 ): ConflictResolutionResult {
+  if (!remote || !remoteMeta) {
+    return { action: 'upload' };
+  }
   const localModified = localMeta?.lastModified ?? local.lastOpened ?? local.createTime;
   const remoteModified = remoteMeta?.lastModified ?? remote.lastSynced ?? remote.createTime;
   const localHash = localMeta?.contentHash ?? '';

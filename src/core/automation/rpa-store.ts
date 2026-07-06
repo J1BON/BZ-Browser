@@ -14,16 +14,26 @@ export class RpaStore {
   async init(): Promise<void> {
     try {
       const raw = await fs.readFile(this.scriptsPath, 'utf-8');
-      const parsed = JSON.parse(raw) as RpaScript[];
-      this.scripts = parsed.map((s) => RpaScriptSchema.parse(s));
-    } catch {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        this.scripts = parsed
+          .map((s: unknown) => RpaScriptSchema.safeParse(s))
+          .filter((r): r is { success: true; data: RpaScript } => r.success)
+          .map((r) => r.data);
+      } else {
+        this.scripts = [];
+      }
+    } catch (err) {
+      console.warn('[RpaStore] rpa-scripts.json corrupt:', (err as Error).message, '— backing up and starting fresh');
+      await fs.rename(this.scriptsPath, this.scriptsPath + '.corrupt').catch(() => {});
       this.scripts = [];
-      await this.save();
     }
   }
 
   async save(): Promise<void> {
-    await fs.writeFile(this.scriptsPath, JSON.stringify(this.scripts, null, 2));
+    const tmp = this.scriptsPath + '.tmp';
+    await fs.writeFile(tmp, JSON.stringify(this.scripts, null, 2));
+    await fs.rename(tmp, this.scriptsPath);
   }
 
   list(profileId?: string): RpaScript[] {

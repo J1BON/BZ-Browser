@@ -1,11 +1,13 @@
-# Cloud Antidetect Browser
+# BZ Browser
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-0.5.0-green.svg)](package.json)
 
-Open-source antidetect browser manager with **per-profile fingerprint isolation**, **Google Drive encrypted sync**, proxy rotation, RPA automation, and a REST API.
+Open-source antidetect browser manager (**BZ Browser**) with **per-profile fingerprint isolation**, **Google Drive encrypted sync**, proxy rotation, RPA automation, and a REST API.
 
 > Fork, contribute, and self-host. Built with Electron + React + TypeScript + Playwright.
+
+**Full walkthrough:** [GUIDE.md](GUIDE.md) — install EXE, Chromium, proxies, launch, API, troubleshooting.
 
 ## Features
 
@@ -14,7 +16,8 @@ Open-source antidetect browser manager with **per-profile fingerprint isolation*
 - **Google Drive sync** — AES-256-GCM encrypted profile bundles
 - **Proxy manager** — health checks, residential presets, rotation pools, geo alignment
 - **Automation API** — REST on `:9321`, CDP endpoints, webhooks, API keys
-- **Broearn import** — migrate existing antidetect profiles
+- **Profile wizard** — Dolphin-style multi-step create (general, proxy, fingerprint, startup)
+- **Extensions** — install from Chrome Web Store link or upload folder / .crx
 - **Cross-platform** — Windows, macOS, Linux builds via GitHub Actions
 
 ## Quick start

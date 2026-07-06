@@ -1,49 +1,48 @@
 import type { GeoIpResult, BrowserProfile, ProxyConfig } from '../../types/profile.js';
+import type { ProxyHealthResult } from '../../types/phase4.js';
+import { checkIp } from '../proxy/ip-checker.js';
 
-const IP_LOOKUP_ENDPOINTS = [
-  'https://ipapi.co/json/',
-  'https://api.ip.sb/geoip',
-];
+export type PreviewGeoSource = 'proxy' | 'network' | 'pending';
+
+export interface PreviewGeoResult {
+  geo: GeoIpResult | null;
+  source: PreviewGeoSource;
+  pending: boolean;
+}
 
 export async function lookupGeoFromIp(ip?: string): Promise<GeoIpResult | null> {
-  for (const endpoint of IP_LOOKUP_ENDPOINTS) {
-    try {
-      const url = ip ? `${endpoint}${endpoint.includes('?') ? '&' : '?'}ip=${ip}` : endpoint;
-      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-      if (!res.ok) continue;
-      const data = await res.json();
-      return normalizeGeoResponse(data);
-    } catch {
-      continue;
-    }
+  try {
+    const res = await checkIp(ip);
+    if (!res) return null;
+    return {
+      ip: res.ip,
+      country: res.country,
+      countryCode: res.countryCode,
+      flag: res.flag,
+      region: res.region,
+      city: res.city,
+      zip: res.zip,
+      latitude: res.lat,
+      longitude: res.lon,
+      timezone: res.timezone,
+      languages: countryCodeToLanguages(res.countryCode),
+      isp: res.isp,
+      org: res.org,
+      asn: res.asn,
+      asnName: res.asnName,
+      isMobile: res.isMobile,
+      isProxy: res.isProxy,
+      isHosting: res.isHosting,
+      riskScore: res.riskScore,
+      latencyMs: res.latencyMs,
+      source: res.source,
+    };
+  } catch {
+    return null;
   }
-  return null;
 }
 
-function normalizeGeoResponse(data: Record<string, unknown>): GeoIpResult | null {
-  const ip = String(data.ip ?? data.query ?? '');
-  const country = String(data.country_name ?? data.country ?? '');
-  const countryCode = String(data.country_code ?? data.countryCode ?? data.country ?? '');
-  const city = String(data.city ?? '');
-  const lat = Number(data.latitude ?? data.lat ?? 0);
-  const lon = Number(data.longitude ?? data.lon ?? data.lng ?? 0);
-  const timezone = String(data.timezone ?? data.time_zone ?? 'UTC');
-
-  if (!ip) return null;
-
-  return {
-    ip,
-    country,
-    countryCode,
-    city,
-    latitude: lat,
-    longitude: lon,
-    timezone,
-    languages: countryCodeToLanguages(countryCode),
-  };
-}
-
-function countryCodeToLanguages(code: string): string[] {
+export function countryCodeToLanguages(code: string): string[] {
   const map: Record<string, string[]> = {
     US: ['en-US', 'en'],
     GB: ['en-GB', 'en'],
@@ -83,7 +82,10 @@ function timezoneOffsetMinutes(tz: string): number | null {
     });
     const part = fmt.formatToParts(now).find((p) => p.type === 'timeZoneName')?.value ?? '';
     const m = part.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/);
-    if (!m) return 0;
+    if (!m) {
+      if (part === 'GMT' || part === 'UTC' || part === '') return 0;
+      return null;
+    }
     const sign = m[1] === '-' ? -1 : 1;
     const hours = Number(m[2]);
     const mins = Number(m[3] ?? 0);
@@ -111,6 +113,63 @@ export interface ProxyGeoValidation {
   ok: boolean;
   error?: string;
   warning?: string;
+}
+
+/** Build geo from a live proxy health check (uses proxy exit timezone directly). */
+export function geoFromProxyHealth(health: ProxyHealthResult): GeoIpResult | null {
+  if (!health.exitIp || !health.timezone) return null;
+  const countryCode = (health.countryCode ?? '').toUpperCase();
+  return {
+    ip: health.exitIp,
+    country: health.country ?? '',
+    countryCode,
+    city: health.city ?? '',
+    latitude: 0,
+    longitude: 0,
+    timezone: health.timezone,
+    languages: countryCodeToLanguages(countryCode || 'US'),
+    isp: health.isp,
+    asn: health.asn,
+    asnName: health.asnName,
+    isProxy: health.isProxy,
+    isHosting: health.isHosting,
+    riskScore: health.riskScore,
+    latencyMs: health.latencyMs,
+    source: 'proxy-health',
+  };
+}
+
+export interface ResolvePreviewGeoOptions {
+  proxyMode: 'none' | 'saved' | 'new';
+  proxy?: ProxyConfig;
+  /** Cached exit IP from a previously checked saved proxy. */
+  savedProxyExitIp?: string;
+  alignGeo?: boolean;
+  checkProxy: (proxy: ProxyConfig) => Promise<ProxyHealthResult>;
+}
+
+/**
+ * Resolves timezone/language for fingerprint preview.
+ * When proxy mode is active, does not silently fall back to the machine's public IP.
+ */
+export async function resolvePreviewGeo(opts: ResolvePreviewGeoOptions): Promise<PreviewGeoResult> {
+  const wantsProxyGeo = opts.proxyMode !== 'none' && opts.alignGeo !== false;
+
+  if (wantsProxyGeo && opts.proxy?.host && opts.proxy.port) {
+    const health = await opts.checkProxy(opts.proxy).catch(() => null);
+    if (health?.online && health.exitIp) {
+      const geo = geoFromProxyHealth(health) ?? await lookupGeoFromIp(health.exitIp).catch(() => null);
+      if (geo) return { geo, source: 'proxy', pending: false };
+    }
+    if (opts.savedProxyExitIp) {
+      const geo = await lookupGeoFromIp(opts.savedProxyExitIp).catch(() => null);
+      if (geo) return { geo, source: 'proxy', pending: false };
+    }
+    return { geo: null, source: 'pending', pending: true };
+  }
+
+  const geo = await lookupGeoFromIp().catch(() => null);
+  return { geo, source: 'network', pending: false };
 }
 
 /** Block launch when proxy exit geo timezone disagrees with profile (after health-check alignment). */

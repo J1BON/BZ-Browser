@@ -95,7 +95,7 @@ function resolveDeviceMemory(fp: FingerprintConfig, seed: string, isMobile: bool
 
 function resolvePlatform(fp: FingerprintConfig): string {
   if (fp.device === 'iOS') return 'iPhone';
-  if (fp.device === 'Android') return 'Linux armv81';
+  if (fp.device === 'Android') return 'Linux armv8l';
   if (fp.device === 'MacOS') return 'MacIntel';
   if (fp.device === 'Linux') return 'Linux x86_64';
   return 'Win32';
@@ -178,7 +178,7 @@ export function buildCanonicalFingerprint(
     spoofSpeechVoices: fp.speechVoices === '2',
     spoofWebGPU: fp.webGPU === '2',
     webGlImageNoise: fp.webGlImage === '2',
-    webGlMetaSpoof: fp.webGlMeta !== '1',
+    webGlMetaSpoof: fp.webGlMeta === '2', // '1'=real, '2'=spoof, '3'=block
     portScanProtect: fp.portScanProtection !== '2',
     mediaDevicesList: identity.mediaDevices,
     speechVoicesList: identity.speechVoices,
@@ -217,7 +217,9 @@ export function canonicalToCdpUserAgentMetadata(cf: CanonicalFingerprint) {
   };
 }
 
-/** iOS Safari UA on Blink is always detectable — block unless explicitly overridden. */
+/** Safari UA on Blink is detectable — warn in health checks; Chrome-iOS (CriOS) is OK. */
 export function isIosOnChromium(fp: FingerprintConfig): boolean {
-  return fp.device === 'iOS';
+  if (fp.device !== 'iOS') return false;
+  const ua = fp.userAgent ?? '';
+  return /Safari/i.test(ua) && !/CriOS|Chrome/i.test(ua);
 }

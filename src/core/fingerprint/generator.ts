@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { BrowserProfile, FingerprintConfig, GeoIpResult } from '../../types/profile.js';
+import { DEFAULT_STARTUP_URL } from '../../constants/startup.js';
 import {
   generateUniqueDevice,
   computeDeviceSignature,
@@ -48,7 +49,7 @@ export function createProfile(
       rotationMode: 'off',
     },
     tags: [],
-    openUrls: [],
+    openUrls: [DEFAULT_STARTUP_URL],
     extensions: [],
     createTime: now,
     syncVersion: 1,
@@ -59,6 +60,7 @@ export function createProfile(
     enableCdp: false,
     ignoreHTTPSErrors: false,
     proxyPoolIds: [],
+    browserEngine: 'chrome',
   };
 }
 

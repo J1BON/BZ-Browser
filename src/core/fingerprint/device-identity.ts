@@ -47,7 +47,8 @@ function pickPlatformVersion(device: FingerprintConfig['device'], seed: string):
 }
 
 function buildFullVersionList(fp: FingerprintConfig): { brand: string; version: string }[] {
-  const full = fp.browserVersion.includes('.') ? fp.browserVersion : `${fp.browserVersion.split('.')[0]}.0.0.0`;
+  const parts = fp.browserVersion.split('.');
+  const full = parts.length === 4 ? fp.browserVersion : `${parts[0] || '136'}.0.0.0`;
   if (fp.device === 'iOS') {
     return [
       { brand: 'Safari', version: full },

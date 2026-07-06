@@ -1,5 +1,5 @@
-appId: com.cloudantidetect.browser
-productName: Cloud Antidetect Browser
+appId: com.bz.browser
+productName: BZ Browser
 copyright: Copyright © 2026
 
 directories:
@@ -10,8 +10,11 @@ files:
   - dist/**/*
   - dist-electron/**/*
   - package.json
+  - node_modules/**/*
   - "!**/*.map"
   - "!**/*.ts"
+  - "!**/node_modules/**/{CHANGELOG.md,README.md,README,readme.md,readme,LICENSE,license}"
+  - "!**/node_modules/**/{test,__tests__,tests,powered-test,example,examples,*.d.ts}"
 
 asar: true
 
@@ -24,8 +27,14 @@ extraResources:
     filter:
       - "**/*"
       - "!**/.bundle-missing"
+  - from: build/icon.png
+    to: logo.png
+  - from: assets
+    to: browser-assets
 
 win:
+  signAndEditExecutable: false
+  icon: build/icon.png
   target:
     - target: nsis
       arch:
@@ -39,7 +48,7 @@ nsis:
   allowElevation: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: Cloud Antidetect Browser
+  shortcutName: BZ Browser
   deleteAppDataOnUninstall: false
 
 mac:
@@ -56,4 +65,4 @@ linux:
     - deb
   category: Network
   artifactName: ${productName}-${version}-linux-${arch}.${ext}
-  maintainer: Cloud Antidetect
+  maintainer: BZ Browser

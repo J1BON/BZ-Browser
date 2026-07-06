@@ -61,6 +61,8 @@ export class RpaRecorder {
   private profileId: string | null = null;
   private startedAt: number | null = null;
   private boundContexts = new WeakSet<BrowserContext>();
+  private pageListeners = new Map<Page, (frame: import('playwright-core').Frame) => void>();
+  private contextPageListeners = new Map<BrowserContext, (page: Page) => void>();
 
   async start(context: BrowserContext, profileId: string): Promise<RpaRecordingState> {
     this.actions = [];
@@ -68,34 +70,38 @@ export class RpaRecorder {
     this.profileId = profileId;
     this.startedAt = Date.now();
 
-    await context.exposeFunction('__rpaPush', (action: RpaAction) => {
-      if (!this.recording) return;
-      if (action.type === 'goto') {
+    if (!this.boundContexts.has(context)) {
+      await context.exposeFunction('__rpaPush', (action: RpaAction) => {
+        if (!this.recording) return;
+        if (action.type === 'goto') {
+          this.actions.push(action);
+          return;
+        }
+        const last = this.actions[this.actions.length - 1];
+        if (action.type === 'scroll' && last?.type === 'scroll') return;
         this.actions.push(action);
-        return;
-      }
-      const last = this.actions[this.actions.length - 1];
-      if (action.type === 'scroll' && last?.type === 'scroll') return;
-      this.actions.push(action);
-    });
+      });
 
-    await context.addInitScript({ content: RECORDER_INIT_SCRIPT });
+      await context.addInitScript({ content: RECORDER_INIT_SCRIPT });
+      this.boundContexts.add(context);
+    }
 
     for (const page of context.pages()) {
       await this.attachPage(page);
     }
 
-    context.on('page', (page) => {
+    const pageListener = (page: Page) => {
       void this.attachPage(page);
-    });
+    };
+    context.on('page', pageListener);
+    this.contextPageListeners.set(context, pageListener);
 
-    this.boundContexts.add(context);
     return this.getState();
   }
 
   private async attachPage(page: Page): Promise<void> {
     await page.evaluate(RECORDER_INIT_SCRIPT).catch(() => {});
-    page.on('framenavigated', (frame) => {
+    const frameListener = (frame: import('playwright-core').Frame) => {
       if (frame === page.mainFrame() && this.recording) {
         this.actions.push({
           type: 'goto',
@@ -103,7 +109,9 @@ export class RpaRecorder {
           timestamp: Date.now(),
         });
       }
-    });
+    };
+    page.on('framenavigated', frameListener);
+    this.pageListeners.set(page, frameListener);
   }
 
   stop(): { actions: RpaAction[]; durationMs: number } {
@@ -113,6 +121,9 @@ export class RpaRecorder {
     const actions = [...this.actions];
     this.actions = [];
     this.profileId = null;
+    // Clean up stored listeners to prevent leaks
+    this.pageListeners.clear();
+    this.contextPageListeners.clear();
     return { actions, durationMs };
   }
 

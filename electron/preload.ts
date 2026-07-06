@@ -27,10 +27,38 @@ export interface ElectronAPI {
   updateProfileMeta: (id: string, meta: { name?: string; group?: string; tags?: string[]; color?: string; remark?: string; warmupPresetId?: string; warmupOnLaunch?: boolean; workspace?: string; headless?: boolean; minFpScore?: number; rotationMode?: 'off' | 'session' | 'random'; proxyPoolIds?: string[] }) => Promise<BrowserProfile[]>;
   deleteProfile: (id: string) => Promise<BrowserProfile[]>;
   createProfile: (name: string, group?: string, options?: { formFactor?: 'desktop' | 'mobile'; device?: string }) => Promise<BrowserProfile[]>;
+  previewFingerprint: (options?: {
+    formFactor?: 'desktop' | 'mobile';
+    device?: string;
+    proxyMode?: 'none' | 'saved' | 'new';
+    savedProxyId?: string;
+    alignGeo?: boolean;
+    proxy?: { host: string; port: string; account?: string; password?: string; type?: string; category?: string };
+  }) => Promise<any>;
+  createProfileFull: (payload: {
+    name: string;
+    count?: number;
+    group?: string;
+    tags?: string[];
+    remark?: string;
+    color?: string;
+    templateId?: string;
+    browserEngine?: 'chrome' | 'firefox';
+    deviceOptions?: { formFactor?: 'desktop' | 'mobile'; device?: string };
+    fingerprint?: Partial<Record<'canvas' | 'webGlImage' | 'webGlMeta' | 'audioContext' | 'mediaDevices' | 'webRTC' | 'fontEnable' | 'clientRects' | 'webGPU' | 'hardwareAccelerate', string>>;
+    proxyMode?: 'none' | 'saved' | 'new';
+    proxyId?: string;
+    proxyNew?: { name: string; host: string; port: string; account?: string; password?: string; type?: string };
+    alignGeo?: boolean;
+    openUrls?: string[];
+    extensionIds?: string[];
+    headless?: boolean;
+  }) => Promise<BrowserProfile[]>;
   regenerateDevice: (id: string) => Promise<{ profile?: BrowserProfile; error?: string; profiles: BrowserProfile[] }>;
   bulkLaunch: (ids: string[]) => Promise<BulkLaunchResult>;
   launchBrowser: (id: string) => Promise<LaunchResult>;
   closeBrowser: (id: string) => Promise<{ success: boolean }>;
+  openProfileUrl: (id: string, url: string) => Promise<{ success: boolean; error?: string }>;
   isBrowserRunning: (id: string) => Promise<boolean>;
   validateFingerprint: (id: string, external?: boolean) => Promise<ValidationReport | null>;
   getChromiumInfo: () => Promise<{ path: string; source: string } | null>;
@@ -54,14 +82,17 @@ export interface ElectronAPI {
   createProxy: (name: string, config: ProxyConfig) => Promise<SavedProxy[]>;
   deleteProxy: (id: string) => Promise<SavedProxy[]>;
   checkProxy: (id: string) => Promise<ProxyHealthResult>;
+  checkProxyConfig: (proxy: { host: string; port: string; account?: string; password?: string; category?: string; type?: string }) => Promise<ProxyHealthResult>;
   checkAllProxies: () => Promise<ProxyHealthResult[]>;
   applyProxyToProfile: (profileId: string, proxyId: string) => Promise<BrowserProfile | null>;
+  setInlineProxy: (profileId: string, raw: { host: string; port: string; account?: string; password?: string; type?: string } | null) => Promise<{ profile: BrowserProfile | null; health: ProxyHealthResult | null } | BrowserProfile | null>;
   listExtensions: () => Promise<ExtensionEntry[]>;
   importExtension: (path: string, name?: string) => Promise<ExtensionEntry[]>;
-  importBroearnExtensions: () => Promise<{ count: number; extensions: ExtensionEntry[] }>;
+  installExtensionFromStore: (urlOrId: string) => Promise<{ name?: string; extensions?: ExtensionEntry[]; error?: string }>;
+  importExtensionFolder: () => Promise<{ name?: string; extensions?: ExtensionEntry[]; error?: string; canceled?: boolean }>;
+  importExtensionCrx: () => Promise<{ name?: string; extensions?: ExtensionEntry[]; error?: string; canceled?: boolean }>;
   removeExtension: (id: string) => Promise<ExtensionEntry[]>;
   assignExtensions: (profileId: string, extensionIds: string[]) => Promise<BrowserProfile | null>;
-  importBroearn: (sourceDir: string) => Promise<{ count: number; profiles: BrowserProfile[] }>;
   getSyncStatus: () => Promise<SyncState>;
   getSyncAuthUrl: () => Promise<{ url?: string; error?: string }>;
   authenticateSync: (code: string) => Promise<SyncState>;
@@ -72,7 +103,7 @@ export interface ElectronAPI {
   setUseTeamFolder: (useTeam: boolean) => Promise<SyncState>;
   runSync: (resolutions?: Record<string, ConflictResolution>) => Promise<SyncResult>;
   getAutomationStatus: () => Promise<AutomationStatus>;
-  getAppPaths: () => Promise<{ dataDir: string; broearnDefault: string; automationUrl: string; version: string; isPackaged: boolean; bundledChromium?: boolean }>;
+  getAppPaths: () => Promise<{ dataDir: string; automationUrl: string; version: string; isPackaged: boolean; bundledChromium?: boolean }>;
   openExternal: (url: string) => Promise<void>;
   checkForUpdates: () => Promise<UpdateState>;
   downloadUpdate: () => Promise<UpdateState>;
@@ -99,6 +130,9 @@ export interface ElectronAPI {
   createWebhook: (url: string, events: string[], secret?: string) => Promise<{ id: string; url: string; events: string[] }>;
   deleteWebhook: (id: string) => Promise<{ id: string; url: string }[]>;
   testWebhook: (id: string) => Promise<{ success: boolean; statusCode?: number; error?: string }>;
+  checkIp: (ip?: string) => Promise<unknown>;
+  getAntidetectWarnings: (id: string) => Promise<string[]>;
+  openFileDialog: (options: Record<string, unknown>) => Promise<unknown>;
 }
 
 const api: ElectronAPI = {
@@ -109,10 +143,13 @@ const api: ElectronAPI = {
   updateProfileMeta: (id, meta) => ipcRenderer.invoke('profiles:updateMeta', id, meta),
   deleteProfile: (id) => ipcRenderer.invoke('profiles:delete', id),
   createProfile: (name, group, options) => ipcRenderer.invoke('profiles:create', name, group, options),
+  previewFingerprint: (options) => ipcRenderer.invoke('profiles:previewFingerprint', options),
+  createProfileFull: (payload) => ipcRenderer.invoke('profiles:createFull', payload),
   regenerateDevice: (id) => ipcRenderer.invoke('profiles:regenerateDevice', id),
   bulkLaunch: (ids) => ipcRenderer.invoke('profiles:bulkLaunch', ids),
   launchBrowser: (id) => ipcRenderer.invoke('browser:launch', id),
   closeBrowser: (id) => ipcRenderer.invoke('browser:close', id),
+  openProfileUrl: (id, url) => ipcRenderer.invoke('browser:openUrl', id, url),
   isBrowserRunning: (id) => ipcRenderer.invoke('browser:isRunning', id),
   validateFingerprint: (id, external) => ipcRenderer.invoke('browser:validate', id, external),
   getChromiumInfo: () => ipcRenderer.invoke('browser:chromiumInfo'),
@@ -136,14 +173,17 @@ const api: ElectronAPI = {
   createProxy: (name, config) => ipcRenderer.invoke('proxy:create', name, config),
   deleteProxy: (id) => ipcRenderer.invoke('proxy:delete', id),
   checkProxy: (id) => ipcRenderer.invoke('proxy:check', id),
+  checkProxyConfig: (proxy) => ipcRenderer.invoke('proxy:checkConfig', proxy),
   checkAllProxies: () => ipcRenderer.invoke('proxy:checkAll'),
   applyProxyToProfile: (profileId, proxyId) => ipcRenderer.invoke('proxy:applyToProfile', profileId, proxyId),
+  setInlineProxy: (profileId, raw) => ipcRenderer.invoke('profiles:setInlineProxy', profileId, raw),
   listExtensions: () => ipcRenderer.invoke('extensions:list'),
   importExtension: (path, name) => ipcRenderer.invoke('extensions:import', path, name),
-  importBroearnExtensions: () => ipcRenderer.invoke('extensions:importBroearn'),
+  installExtensionFromStore: (urlOrId) => ipcRenderer.invoke('extensions:installFromStore', urlOrId),
+  importExtensionFolder: () => ipcRenderer.invoke('extensions:importFolder'),
+  importExtensionCrx: () => ipcRenderer.invoke('extensions:importCrx'),
   removeExtension: (id) => ipcRenderer.invoke('extensions:remove', id),
   assignExtensions: (profileId, extensionIds) => ipcRenderer.invoke('extensions:assignToProfile', profileId, extensionIds),
-  importBroearn: (sourceDir) => ipcRenderer.invoke('import:broearn', sourceDir),
   getSyncStatus: () => ipcRenderer.invoke('sync:status'),
   getSyncAuthUrl: () => ipcRenderer.invoke('sync:authUrl'),
   authenticateSync: (code) => ipcRenderer.invoke('sync:authenticate', code),
@@ -155,7 +195,11 @@ const api: ElectronAPI = {
   runSync: (resolutions) => ipcRenderer.invoke('sync:run', resolutions),
   getAutomationStatus: () => ipcRenderer.invoke('automation:status'),
   getAppPaths: () => ipcRenderer.invoke('app:getPaths'),
-  openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
+  openExternal: (url: string) => {
+    const parsed = new URL(url);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return Promise.resolve();
+    return ipcRenderer.invoke('shell:openExternal', url);
+  },
   checkForUpdates: () => ipcRenderer.invoke('update:check'),
   downloadUpdate: () => ipcRenderer.invoke('update:download'),
   installUpdate: () => ipcRenderer.invoke('update:install'),
@@ -186,6 +230,9 @@ const api: ElectronAPI = {
   createWebhook: (url, events, secret) => ipcRenderer.invoke('webhooks:create', url, events, secret),
   deleteWebhook: (id) => ipcRenderer.invoke('webhooks:delete', id),
   testWebhook: (id) => ipcRenderer.invoke('webhooks:test', id),
+  checkIp: (ip) => ipcRenderer.invoke('proxy:checkIp', ip),
+  getAntidetectWarnings: (id) => ipcRenderer.invoke('profiles:antidetectWarnings', id),
+  openFileDialog: (options) => ipcRenderer.invoke('dialog:openFile', options),
 };
 
 contextBridge.exposeInMainWorld('electronAPI', api);

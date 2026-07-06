@@ -28,20 +28,33 @@ import {
   importCookiesJson,
   importCookiesNetscape,
 } from '../cookies/cookie-manager.js';
+import { joinChromeExtensionArgs } from './chrome-path.js';
+import { ensureProfileSearchReady, ensureChromiumInstallSearchDefaults } from './search-setup.js';
+import { formatLaunchError } from '../../utils/launch-error.js';
+import { computeLaunchViewport, computeLaunchInnerViewport, shouldMaximizeLaunchWindow } from '../../utils/resolution.js';
+import { resolveStartupUrls } from '../../constants/startup.js';
+
+const launchLocks = new Map<string, Promise<LaunchResult>>();
 
 const runningContexts = new Map<string, BrowserContext>();
 const cdpPorts = new Map<string, number>();
+const allocatedPorts = new Set<number>();
 let nextDebugPort = 9222;
 let portAllocationLock: Promise<void> = Promise.resolve();
 
 async function allocateDebugPort(): Promise<number> {
-  let port = nextDebugPort;
+  let resolvePort: (p: number) => void = () => {};
+  const portPromise = new Promise<number>((r) => { resolvePort = r; });
   portAllocationLock = portAllocationLock.then(async () => {
-    port = await findFreePort(nextDebugPort);
+    let port = await findFreePort(nextDebugPort);
+    while (allocatedPorts.has(port)) {
+      port = await findFreePort(port + 1);
+    }
+    allocatedPorts.add(port);
     nextDebugPort = port + 1;
+    resolvePort(port);
   });
-  await portAllocationLock;
-  return port;
+  return portPromise;
 }
 
 function buildProxyOption(proxy: ProxyConfig) {
@@ -66,12 +79,12 @@ async function findFreePort(start = 9222): Promise<number> {
     });
     if (free) return port;
   }
-  return start;
+  throw new Error(`No free debug port found in range ${start} to ${start + 199}`);
 }
 
 async function applyCdpUserAgentOverride(context: BrowserContext, profile: BrowserProfile): Promise<void> {
   const cf = buildCanonicalFingerprint(profile.fingerprint, profile.fingerprintId);
-  const page = context.pages()[0] ?? await context.newPage();
+  const page = context.pages().find((p) => !p.isClosed()) ?? await context.newPage();
   const cdp = await context.newCDPSession(page);
   try {
     await cdp.send('Network.enable');
@@ -104,7 +117,25 @@ export class BrowserLauncher {
     profile: BrowserProfile,
     dataDir: string,
     proxyOverride?: ProxyConfig,
-    options?: { enableCdp?: boolean },
+    options?: { enableCdp?: boolean; displaySize?: { width: number; height: number } },
+  ): Promise<LaunchResult> {
+    const inFlight = launchLocks.get(profile.id);
+    if (inFlight) return inFlight;
+
+    const promise = this.launchInternal(profile, dataDir, proxyOverride, options);
+    launchLocks.set(profile.id, promise);
+    try {
+      return await promise;
+    } finally {
+      launchLocks.delete(profile.id);
+    }
+  }
+
+  private async launchInternal(
+    profile: BrowserProfile,
+    dataDir: string,
+    proxyOverride?: ProxyConfig,
+    options?: { enableCdp?: boolean; displaySize?: { width: number; height: number } },
   ): Promise<LaunchResult> {
     try {
       if (runningContexts.has(profile.id)) {
@@ -122,7 +153,7 @@ export class BrowserLauncher {
         return {
           success: false,
           profileId: profile.id,
-          error: 'iOS/Safari profiles cannot run on Chromium (engine mismatch). Use Android mobile instead.',
+          error: 'iOS profile uses a Safari user-agent on Chromium (instant detection). Recreate the profile or regenerate fingerprint.',
         };
       }
 
@@ -133,6 +164,8 @@ export class BrowserLauncher {
       if (!chromiumInfo) {
         return { success: false, profileId: profile.id, error: getChromiumInstallHint() };
       }
+
+      await ensureChromiumInstallSearchDefaults(chromiumInfo.path).catch(() => {});
 
       const patched = requirePatchedChromium(chromiumInfo.source);
       if (!patched.ok) {
@@ -161,67 +194,145 @@ export class BrowserLauncher {
         return { success: false, profileId: profile.id, error: geoCheck.error };
       }
 
-      const args = [...buildLaunchArgs(profile, profile.fingerprintId)];
+      const hasProxy = !!(activeProxy.host && activeProxy.port);
+      const isSocks = !!activeProxy.type?.toLowerCase().includes('socks');
+      if (isSocks && (activeProxy.account || activeProxy.password) && activeProxy.host) {
+        return {
+          success: false,
+          profileId: profile.id,
+          error: 'Chromium cannot authenticate SOCKS5 proxies with a username/password. Use an HTTP/HTTPS proxy, or a SOCKS5 proxy that authorizes your IP (no login).',
+        };
+      }
+
+      // HTTP/HTTPS proxies go through Playwright (handles auth). SOCKS5 proxies are passed as a
+      // launch arg instead, because Playwright injects a `--host-resolver-rules=MAP * ~NOTFOUND`
+      // DNS blocker for socks5 that breaks all navigation on fingerprint-chromium. socks5:// in
+      // --proxy-server already resolves DNS remotely, so no leak-protection is lost.
+      const headed = !(profile.headless ?? false);
+      if (headed && hasProxy && !isSocks && (activeProxy.account || activeProxy.password)) {
+        return {
+          success: false,
+          profileId: profile.id,
+          error: 'Authenticated HTTP proxies are not supported in headed mode. Use a SOCKS5 proxy, an IP-whitelisted HTTP proxy, or launch headless.',
+        };
+      }
+      const usePlaywrightProxy = hasProxy && !isSocks && !headed;
+      const proxy = usePlaywrightProxy ? buildProxyOption(activeProxy) : undefined;
+      const launchProfile = { ...profile, proxy: activeProxy };
+      const launchViewport = computeLaunchViewport(fp, options?.displaySize);
+      const launchInner = computeLaunchInnerViewport(fp, options?.displaySize);
+      const maximize = shouldMaximizeLaunchWindow(fp);
+      const args = [...buildLaunchArgs(launchProfile, profile.fingerprintId, {
+        skipProxyArg: usePlaywrightProxy,
+        launchSize: launchViewport,
+        maximize,
+      })];
       let debugPort: number | undefined;
 
-      if (enableCdp) {
+      if (enableCdp && !headed) {
         debugPort = await allocateDebugPort();
         args.push(`--remote-debugging-port=${debugPort}`);
       }
 
+      let extPaths: string[] = [];
       if (this.extensionLoader && profile.extensions.length > 0) {
-        const extPaths = await this.extensionLoader.resolvePaths(profile.extensions);
-        args.push(...this.extensionLoader.buildChromeArgs(extPaths));
+        extPaths.push(...await this.extensionLoader.resolvePaths(profile.extensions));
+      }
+      if (extPaths.length > 0) {
+        if (this.extensionLoader) {
+          args.push(...this.extensionLoader.buildChromeArgs(extPaths));
+        } else {
+          args.push(...joinChromeExtensionArgs(extPaths));
+        }
       }
 
-      const proxy = buildProxyOption(activeProxy);
+      await ensureProfileSearchReady(userDataDir);
 
-      const context = await chromium.launchPersistentContext(userDataDir, {
-        executablePath: chromiumInfo.path,
-        headless: profile.headless ?? false,
-        args,
-        viewport: { width: fp.windowWidth, height: fp.windowHeight },
-        userAgent: fp.userAgent,
-        locale: fp.screenLang,
-        timezoneId: fp.timeZone,
-        isMobile,
-        hasTouch: isMobile,
-        deviceScaleFactor: fp.devicePixelRatio ?? (isMobile ? 3 : 1),
-        geolocation: fp.latitude != null && fp.longitude != null
-          ? { latitude: fp.latitude, longitude: fp.longitude }
-          : undefined,
-        permissions: fp.latitude != null ? ['geolocation'] : [],
-        ignoreHTTPSErrors: profile.ignoreHTTPSErrors ?? false,
-        extraHTTPHeaders: buildNetworkHeaders(fp, profile.fingerprintId),
-        ...(proxy ? { proxy } : {}),
-      });
+      let context: BrowserContext | null = null;
 
-      await applyCdpUserAgentOverride(context, profile);
+      const openPlaywrightContext = async (headless: boolean): Promise<BrowserContext> => {
+        const launchArgs = [...args];
+        if (headed && debugPort == null) {
+          debugPort = await allocateDebugPort();
+          launchArgs.push(`--remote-debugging-port=${debugPort}`);
+        } else if (debugPort != null) {
+          launchArgs.push(`--remote-debugging-port=${debugPort}`);
+        }
+        return chromium.launchPersistentContext(userDataDir, {
+          executablePath: chromiumInfo.path,
+          headless,
+          chromiumSandbox: true,
+          ignoreDefaultArgs: ['--enable-automation', '--no-sandbox', '--auto-open-devtools-for-tabs'],
+          args: headless ? [...launchArgs, '--headless=new'] : launchArgs,
+          viewport: isMobile ? launchViewport : null,
+          userAgent: fp.userAgent,
+          locale: fp.screenLang,
+          timezoneId: fp.timeZone,
+          isMobile,
+          hasTouch: isMobile,
+          ...(isMobile ? { deviceScaleFactor: fp.devicePixelRatio ?? 3 } : {}),
+          geolocation: fp.latitude != null && fp.longitude != null
+            ? { latitude: fp.latitude, longitude: fp.longitude }
+            : undefined,
+          permissions: fp.latitude != null ? ['geolocation'] : [],
+          ignoreHTTPSErrors: profile.ignoreHTTPSErrors ?? false,
+          extraHTTPHeaders: buildNetworkHeaders(fp, profile.fingerprintId),
+          ...(proxy ? { proxy } : {}),
+        });
+      };
 
-      await context.addInitScript({
-        content: buildFingerprintScript(fp, profile.fingerprintId, activeProxy.ip, { useNativeKernel }),
-      });
+      try {
+        context = await openPlaywrightContext(!headed);
+        if (headed) {
+          for (const page of context.pages()) {
+            try {
+              const cdp = await context.newCDPSession(page);
+              await cdp.send('Emulation.clearDeviceMetricsOverride');
+              await cdp.detach();
+            } catch {
+              // non-fatal
+            }
+          }
+        }
 
-      if (profile.openUrls.length > 0) {
-        for (const url of profile.openUrls) {
+        await applyCdpUserAgentOverride(context, profile);
+
+        await context.addInitScript({
+          content: buildFingerprintScript(fp, profile.fingerprintId, activeProxy.ip, {
+            useNativeKernel,
+            launchViewport: launchInner,
+          }),
+        });
+
+        const startupUrls = resolveStartupUrls(profile.openUrls);
+        const firstPage = context.pages()[0] ?? await context.newPage();
+        await firstPage.goto(startupUrls[0]).catch(() => {});
+        for (const url of startupUrls.slice(1)) {
           const page = await context.newPage();
           await page.goto(url).catch(() => {});
         }
-      } else {
-        const page = context.pages()[0] ?? await context.newPage();
-        await page.goto('about:blank');
-      }
 
-      runningContexts.set(profile.id, context);
-      if (debugPort != null) cdpPorts.set(profile.id, debugPort);
+        runningContexts.set(profile.id, context);
+        if (debugPort != null) cdpPorts.set(profile.id, debugPort);
 
-      context.on('close', async () => {
-        runningContexts.delete(profile.id);
-        cdpPorts.delete(profile.id);
-        if (this.onProfileClose) {
-          await this.onProfileClose(profile.id).catch(() => {});
+        const currentPort = debugPort;
+        context.on('close', async () => {
+          runningContexts.delete(profile.id);
+          cdpPorts.delete(profile.id);
+          if (currentPort != null) allocatedPorts.delete(currentPort);
+          if (this.onProfileClose) {
+            await this.onProfileClose(profile.id).catch(() => {});
+          }
+        });
+      } catch (err) {
+        if (context) {
+          await context.close().catch(() => {});
         }
-      });
+        if (debugPort != null) {
+          allocatedPorts.delete(debugPort);
+        }
+        throw err;
+      }
 
       let warmupStarted = false;
       if (profile.warmupOnLaunch && profile.warmupPresetId) {
@@ -236,7 +347,10 @@ export class BrowserLauncher {
           const report = await validateFingerprintQuickExternal(page);
           fpScore = report.detectionScore ?? report.score;
           if (fpScore < profile.minFpScore) {
-            await context.close();
+            runningContexts.delete(profile.id);
+            cdpPorts.delete(profile.id);
+            if (debugPort != null) allocatedPorts.delete(debugPort);
+            await context.close().catch(() => {});
             return {
               success: false,
               profileId: profile.id,
@@ -267,12 +381,24 @@ export class BrowserLauncher {
         fpGateNote: profile.minFpScore > 0 ? FP_LAUNCH_GATE_DESCRIPTION : undefined,
       };
     } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      console.error('Profile launch failed:', raw);
       return {
         success: false,
         profileId: profile.id,
-        error: err instanceof Error ? err.message : String(err),
+        error: formatLaunchError(raw),
       };
     }
+  }
+
+  /** Opens a URL in a new tab of the running profile (used by fingerprint checks). */
+  async openProfileUrl(profileId: string, url: string): Promise<boolean> {
+    const ctx = runningContexts.get(profileId);
+    if (!ctx) return false;
+    const page = await ctx.newPage();
+    await page.goto(url).catch(() => {});
+    await page.bringToFront().catch(() => {});
+    return true;
   }
 
   async exportCookies(profileId: string, format: 'json' | 'netscape', outPath: string): Promise<number | null> {
@@ -298,10 +424,13 @@ export class BrowserLauncher {
   async validate(profileId: string, external = false): Promise<import('../fingerprint/external-validator.js').ExternalValidationReport | import('../fingerprint/validator.js').ValidationReport | null> {
     const ctx = runningContexts.get(profileId);
     if (!ctx) return null;
-    const page = ctx.pages()[0];
-    if (!page) return null;
-    if (external) return validateFingerprintExternal(page);
-    return validateFingerprintQuick(page);
+    const valPage = await ctx.newPage();
+    try {
+      if (external) return await validateFingerprintExternal(valPage);
+      return await validateFingerprintQuick(valPage);
+    } finally {
+      await valPage.close().catch(() => {});
+    }
   }
 
   async startRpaRecording(profileId: string): Promise<RpaRecordingState | null> {
@@ -348,10 +477,12 @@ export class BrowserLauncher {
 
   async close(profileId: string): Promise<void> {
     const ctx = runningContexts.get(profileId);
+    const port = cdpPorts.get(profileId);
+    runningContexts.delete(profileId);
+    cdpPorts.delete(profileId);
+    if (port != null) allocatedPorts.delete(port);
     if (ctx) {
-      await ctx.close();
-      runningContexts.delete(profileId);
-      cdpPorts.delete(profileId);
+      await ctx.close().catch(() => {});
     }
   }
 

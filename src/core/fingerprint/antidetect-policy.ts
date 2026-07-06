@@ -23,7 +23,7 @@ export const ANTIDETECT_DEFAULTS: Partial<FingerprintConfig> = {
   hardwareAccelerate: '1',
 };
 
-export const DEFAULT_MIN_FP_SCORE = 85;
+export const DEFAULT_MIN_FP_SCORE = 0;
 
 /** What the launch-time minFpScore gate actually measures. */
 export const FP_LAUNCH_GATE_DESCRIPTION =

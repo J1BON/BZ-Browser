@@ -31,7 +31,7 @@ const DEFAULT_SHADER_PRECISION = [
 
 const GTX1060: WebGlProfile = {
   webgpuVendor: 'nvidia',
-  webgpuArchitecture: 'ampere',
+  webgpuArchitecture: 'pascal',
   extensions: [...BASE_EXTENSIONS, 'WEBGL_compressed_texture_astc'],
   shaderPrecision: DEFAULT_SHADER_PRECISION,
   params: {

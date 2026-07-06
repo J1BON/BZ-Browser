@@ -28,4 +28,4 @@ Never commit:
 - Profile browser data or proxy credentials
 - API keys (`cab_...`) or webhook secrets
 
-These stay in local app data (`%APPDATA%/CloudAntidetect/` on Windows).
+These stay in local app data (`%APPDATA%/bz-browser/BZBrowser/` on Windows).

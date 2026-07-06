@@ -1,6 +1,5 @@
 import fs from 'fs/promises';
 import path from 'path';
-import archiver from 'archiver';
 import { createWriteStream } from 'fs';
 import { Readable } from 'stream';
 import extract from 'extract-zip';
@@ -22,7 +21,7 @@ import {
   type SyncConflict,
 } from './conflict-resolver.js';
 
-const DRIVE_FOLDER_NAME = 'CloudAntidetectBrowser';
+const DRIVE_FOLDER_NAME = 'BZBrowser';
 const SCOPES = [
   'https://www.googleapis.com/auth/drive.file',
   'https://www.googleapis.com/auth/userinfo.email',
@@ -196,7 +195,7 @@ export class GoogleDriveSync {
     const decision = resolveSyncConflict(
       profile,
       localMeta,
-      remoteProfile ?? profile,
+      remoteProfile,
       remoteMeta,
       resolution,
     );
@@ -279,10 +278,9 @@ export class GoogleDriveSync {
     await this.zipDirectory(browserDataDir, zipPath);
     const zipBuffer = await fs.readFile(zipPath);
 
-    const syncMeta = await computeProfileSyncMeta(profile.id, browserDataDir, profile.syncVersion);
-    await saveSyncMeta(getSyncMetaPath(dataDir, profile.id), syncMeta);
-
     const updatedProfile = bumpSyncVersion(profile);
+    const syncMeta = await computeProfileSyncMeta(profile.id, browserDataDir, updatedProfile.syncVersion);
+    await saveSyncMeta(getSyncMetaPath(dataDir, profile.id), syncMeta);
 
     await this.uploadEncrypted(`${profile.id}.meta.json`, Buffer.from(JSON.stringify(updatedProfile)));
     await this.uploadEncrypted(`${profile.id}.sync-meta.json`, Buffer.from(JSON.stringify(syncMeta)));
@@ -312,7 +310,15 @@ export class GoogleDriveSync {
       const extractDir = path.join(dataDir, 'profiles', profileId, 'browser-data');
       await fs.mkdir(extractDir, { recursive: true });
       await fs.writeFile(zipPath, zipBuffer);
-      await extract(zipPath, { dir: extractDir });
+      await extract(zipPath, {
+        dir: extractDir,
+        onEntry: (entry) => {
+          const destPath = path.resolve(extractDir, entry.fileName);
+          if (!destPath.startsWith(path.resolve(extractDir) + path.sep) && destPath !== path.resolve(extractDir)) {
+            throw new Error(`Zip slip validation failed: "${entry.fileName}"`);
+          }
+        }
+      });
       await fs.rm(zipPath, { force: true });
     }
 
@@ -438,13 +444,20 @@ export class GoogleDriveSync {
 
   private zipDirectory(sourceDir: string, outPath: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      const output = createWriteStream(outPath);
-      const archive = archiver('zip', { zlib: { level: 6 } });
-      output.on('close', () => resolve());
-      archive.on('error', reject);
-      archive.pipe(output);
-      archive.directory(sourceDir, false);
-      archive.finalize();
+      void (async () => {
+        try {
+          const archiver = (await import('archiver')).default;
+          const output = createWriteStream(outPath);
+          const archive = archiver('zip', { zlib: { level: 6 } });
+          output.on('close', () => resolve());
+          archive.on('error', reject);
+          archive.pipe(output);
+          archive.directory(sourceDir, false);
+          await archive.finalize();
+        } catch (err) {
+          reject(err);
+        }
+      })();
     });
   }
 

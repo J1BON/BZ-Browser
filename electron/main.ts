@@ -1,6 +1,10 @@
-import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, screen } from 'electron';
 
 import path from 'path';
+import fs from 'fs';
+import { createHash } from 'crypto';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 
 import { fileURLToPath } from 'url';
 
@@ -10,15 +14,15 @@ import { BrowserLauncher } from '../src/core/browser/launcher.js';
 
 import { GoogleDriveSync } from '../src/core/sync/google-drive.js';
 
-import { importBroearnProfiles } from '../src/core/import/broearn-importer.js';
-
 import { alignFingerprintWithGeo, applyNewDeviceToProfile, createProfile, antidetectWarnings } from '../src/core/fingerprint/generator.js';
 
 import type { DeviceGenerateOptions } from '../src/core/fingerprint/device-generator.js';
 
-import { lookupGeoFromIp } from '../src/core/fingerprint/geo.js';
+import { lookupGeoFromIp, resolvePreviewGeo } from '../src/core/fingerprint/geo.js';
 
 import { getChromiumStatus, setBundledResourcesPath } from '../src/core/fingerprint/chromium-resolver.js';
+import { setPackagedBrowserAssetsRoot } from '../src/core/browser/bundled-assets.js';
+import { applySystemChromiumSearchPolicy } from '../src/core/browser/search-policy.js';
 
 import { installPatchedChromium } from '../src/core/fingerprint/chromium-installer.js';
 
@@ -38,13 +42,15 @@ import { ApiKeyStore } from '../src/core/api/api-key-store.js';
 
 import { AuditLog } from '../src/core/team/audit-log.js';
 
-import { prepareProfileForLaunch } from '../src/core/proxy/launch-proxy.js';
+import { prepareProfileForLaunch, alignProfileWithProxyIp } from '../src/core/proxy/launch-proxy.js';
 
 import { PROFILE_TEMPLATES, bulkCreateFromTemplate, parseCsvBulkCreate, createFromTemplate } from '../src/core/profiles/profile-templates.js';
 
 import { RESIDENTIAL_PROVIDERS, buildProviderProxy } from '../src/core/proxy/residential-providers.js';
 
 import { listMarketplace } from '../src/core/extensions/extension-marketplace.js';
+
+import { downloadExtensionFromStore, extractCrxFile, parseChromeExtensionId } from '../src/core/extensions/extension-installer.js';
 
 import { WebhookStore, type WebhookEvent } from '../src/core/webhooks/webhook-store.js';
 
@@ -57,6 +63,8 @@ import type { SavedProxy } from '../src/types/phase4.js';
 import type { TeamPermission, TeamRole } from '../src/types/team.js';
 
 import type { RpaScript } from '../src/types/rpa.js';
+
+import { DEFAULT_STARTUP_URL } from '../src/constants/startup.js';
 
 
 
@@ -92,32 +100,32 @@ let webhookStore: WebhookStore;
 
 
 
-const DATA_DIR = path.join(app.getPath('userData'), 'CloudAntidetect');
+/** Dev builds use a separate folder so test runs don't mix with packaged profiles. */
+const DATA_DIR = isDev
+  ? path.join(app.getPath('userData'), 'BZBrowser', 'dev')
+  : path.join(app.getPath('userData'), 'BZBrowser');
 
 
 
 async function audit(action: string, target?: string, detail?: string): Promise<void> {
-
-  const email = teamManager.getState().currentUserEmail ?? 'local';
-
-  await auditLog.log(email, action, target, detail);
-
+  if (!teamManager || !auditLog) return;
+  try {
+    const email = teamManager.getState().currentUserEmail ?? 'local';
+    await auditLog.log(email, action, target, detail);
+  } catch (err) {
+    console.error('[audit] Failed:', err);
+  }
 }
 
 
 
 async function fireWebhook(event: WebhookEvent, data: Record<string, unknown>): Promise<void> {
-
+  if (!webhookStore) return;
   try {
-
     await webhookStore.dispatch(event, data);
-
   } catch (err) {
-
     console.error('Webhook dispatch failed:', event, err);
-
   }
-
 }
 
 
@@ -162,6 +170,21 @@ async function syncTeamUserFromDrive(): Promise<void> {
 
 async function createWindow() {
 
+  const iconPaths = [
+    path.join(app.getAppPath(), 'dist', 'logo.png'),
+    path.join(__dirname, '..', '..', 'public', 'logo.png'),
+    path.join(process.resourcesPath ?? '', 'logo.png'),
+  ];
+  let icon;
+  for (const p of iconPaths) {
+    try {
+      if (fs.existsSync(p)) {
+        icon = nativeImage.createFromPath(p);
+        break;
+      }
+    } catch { /* skip */ }
+  }
+
   mainWindow = new BrowserWindow({
 
     width: 1280,
@@ -172,7 +195,9 @@ async function createWindow() {
 
     minHeight: 600,
 
-    title: 'Cloud Antidetect Browser',
+    title: 'BZ Browser',
+
+    icon,
 
     webPreferences: {
 
@@ -188,15 +213,25 @@ async function createWindow() {
 
 
 
+  mainWindow.webContents.on('did-fail-load', (_event, code, description, url) => {
+    console.error('Renderer failed to load:', { code, description, url });
+  });
+
+  mainWindow.webContents.on('preload-error', (_event, preloadPath, error) => {
+    console.error('Preload script error:', preloadPath, error);
+  });
+
   if (isDev) {
 
     await mainWindow.loadURL('http://localhost:5173');
 
-    mainWindow.webContents.openDevTools({ mode: 'detach' });
+    if (process.env.BZ_OPEN_DEVTOOLS === '1') {
+      mainWindow.webContents.openDevTools({ mode: 'detach' });
+    }
 
   } else {
 
-    await mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+    await mainWindow.loadFile(path.join(app.getAppPath(), 'dist', 'index.html'));
 
   }
 
@@ -244,17 +279,24 @@ async function onProfileClose(profileId: string): Promise<void> {
 
 
 
+async function setupChromiumPolicies() {
+  await applySystemChromiumSearchPolicy();
+}
+
 app.whenReady().then(async () => {
+  await setupChromiumPolicies();
 
   if (app.isPackaged) {
 
     setBundledResourcesPath(process.resourcesPath);
+    setPackagedBrowserAssetsRoot(path.join(process.resourcesPath, 'browser-assets'));
 
   }
 
 
 
   profileStore = new ProfileStore(DATA_DIR);
+  console.log('[BZBrowser] data dir:', DATA_DIR);
 
   browserLauncher = new BrowserLauncher();
 
@@ -329,21 +371,32 @@ app.whenReady().then(async () => {
 
 
   app.on('activate', () => {
-
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow().catch((err) => console.error('Failed to recreate window on activate:', err));
+    }
   });
 
+}).catch((err: Error) => {
+  console.error('Fatal: app initialization failed:', err);
+  dialog.showErrorBox('Startup Error', `Failed to start BZBrowser:\n${err.message}`);
+  app.quit();
 });
 
 
 
 app.on('window-all-closed', () => {
-
   automationServer?.stop();
-
-  if (process.platform !== 'darwin') app.quit();
-
+  // Close all running browser sessions to prevent orphaned Chromium processes
+  if (browserLauncher) {
+    const activeIds = browserLauncher.getActiveProfileIds?.() ?? [];
+    Promise.all(activeIds.map((id: string) => browserLauncher.close(id).catch(() => {}))).then(() => {
+      if (process.platform !== 'darwin') app.quit();
+    }).catch(() => {
+      if (process.platform !== 'darwin') app.quit();
+    });
+  } else {
+    if (process.platform !== 'darwin') app.quit();
+  }
 });
 
 
@@ -355,7 +408,7 @@ function registerIpcHandlers() {
   ipcMain.handle('profiles:antidetectWarnings', (_e, id: string) => {
     return profileStore.get(id).then((p) => {
       if (!p) return [];
-      return antidetectWarnings(p.fingerprint, !!(p.proxy.host && p.proxy.port));
+      return antidetectWarnings(p.fingerprint, !!(p.proxy?.host && p.proxy?.port));
     });
   });
 
@@ -389,12 +442,57 @@ function registerIpcHandlers() {
 
     requirePerm('profiles:delete');
 
-    await browserLauncher.close(id);
+    try { await browserLauncher.close(id); } catch (e) { console.warn('[profiles:delete] close failed, proceeding:', e); }
 
     await profileStore.remove(id);
 
     return profileStore.list();
 
+  });
+
+  ipcMain.handle('profiles:previewFingerprint', async (_e, options?: DeviceGenerateOptions & {
+    proxy?: import('../src/types/profile.js').ProxyConfig;
+    proxyMode?: 'none' | 'saved' | 'new';
+    savedProxyId?: string;
+    alignGeo?: boolean;
+  }) => {
+    requirePerm('profiles:create');
+    const { generateFingerprint } = await import('../src/core/fingerprint/generator.js');
+
+    let savedProxyExitIp: string | undefined;
+    if (options?.savedProxyId) {
+      const saved = await proxyManager.get(options.savedProxyId);
+      if (saved?.exitIp && saved.lastStatus === 'online') {
+        savedProxyExitIp = saved.exitIp;
+      }
+    }
+
+    const proxyMode = options?.proxyMode ?? (options?.proxy?.host && options.proxy.port ? 'new' : 'none');
+    const { geo, source, pending } = await resolvePreviewGeo({
+      proxyMode,
+      proxy: options?.proxy,
+      savedProxyExitIp,
+      alignGeo: options?.alignGeo,
+      checkProxy: (proxy) => proxyManager.checkProxyConfig('inline', proxy),
+    });
+
+    const previewKey = createHash('sha256').update(JSON.stringify({
+      formFactor: options?.formFactor,
+      device: options?.device,
+      resolution: options?.resolution,
+      tz: geo?.timezone,
+      lang: geo?.languages?.[0],
+      proxyMode,
+      geoSource: source,
+    })).digest('hex').slice(0, 32);
+    const fp = generateFingerprint(geo ?? undefined, previewKey, options);
+    return {
+      ...fp,
+      geoSource: source,
+      geoPending: pending,
+      geoCountryCode: geo?.countryCode,
+      geoCountry: geo?.country,
+    };
   });
 
   ipcMain.handle('profiles:create', async (_e, name: string, group?: string, options?: DeviceGenerateOptions) => {
@@ -413,6 +511,120 @@ function registerIpcHandlers() {
 
     return profileStore.list();
 
+  });
+
+  ipcMain.handle('profiles:createFull', async (_e, payload: {
+    name: string;
+    count?: number;
+    group?: string;
+    tags?: string[];
+    remark?: string;
+    color?: string;
+    templateId?: string;
+    browserEngine?: 'chrome' | 'firefox';
+    deviceOptions?: DeviceGenerateOptions;
+    fingerprint?: Partial<Record<'canvas' | 'webGlImage' | 'webGlMeta' | 'audioContext' | 'mediaDevices' | 'webRTC' | 'fontEnable' | 'clientRects' | 'webGPU' | 'hardwareAccelerate', string>>;
+    proxyMode?: 'none' | 'saved' | 'new';
+    proxyId?: string;
+    proxyNew?: { name: string; host: string; port: string; account?: string; password?: string; type?: string };
+    alignGeo?: boolean;
+    openUrls?: string[];
+    extensionIds?: string[];
+    headless?: boolean;
+  }) => {
+    requirePerm('profiles:create');
+
+    // Machine geo is only a placeholder; when a proxy is set we realign to the proxy's exit geo below.
+    const machineGeo = await lookupGeoFromIp();
+
+    // Resolve the proxy config ONCE (shared across a batch) so we don't create N duplicate proxies
+    // or run N identical health checks.
+    let sharedProxy: BrowserProfile['proxy'] | null = null;
+    if (payload.proxyMode === 'saved' && payload.proxyId) {
+      const saved = await proxyManager.get(payload.proxyId);
+      if (saved) sharedProxy = { ...saved.proxy };
+    } else if (payload.proxyMode === 'new' && payload.proxyNew?.host && payload.proxyNew.port) {
+      const proxyType = payload.proxyNew.type === 'socks5' ? 'socks5' : 'http';
+      const existingProxies = await proxyManager.list();
+      const duplicate = existingProxies.find((p) =>
+        p.proxy.host === payload.proxyNew!.host &&
+        p.proxy.port === payload.proxyNew!.port &&
+        (p.proxy.account || '') === (payload.proxyNew!.account || '') &&
+        (p.proxy.password || '') === (payload.proxyNew!.password || '') &&
+        p.proxy.type === proxyType
+      );
+      if (duplicate) {
+        sharedProxy = { ...duplicate.proxy };
+      } else {
+        const all = await proxyManager.create(payload.proxyNew.name || 'Profile proxy', {
+          category: '4',
+          type: proxyType,
+          host: payload.proxyNew.host,
+          port: payload.proxyNew.port,
+          account: payload.proxyNew.account,
+          password: payload.proxyNew.password,
+          rotationMode: 'off',
+        });
+        const created = all[all.length - 1];
+        if (created) sharedProxy = { ...created.proxy };
+      }
+    }
+
+    // One exit-IP lookup for the whole batch.
+    let proxyExitIp: string | undefined;
+    if (sharedProxy?.host && sharedProxy.port) {
+      const health = await proxyManager.checkProxyConfig('inline', sharedProxy);
+      if (health.exitIp) proxyExitIp = health.exitIp;
+    }
+
+    const applyFpOverrides = (p: BrowserProfile) => {
+      const o = payload.fingerprint;
+      if (!o) return;
+      const modes = ['1', '2', '3'];
+      const setMode = (k: 'canvas' | 'webGlImage' | 'webGlMeta' | 'audioContext' | 'mediaDevices' | 'webRTC' | 'fontEnable' | 'clientRects' | 'webGPU' | 'hardwareAccelerate') => {
+        const v = o[k];
+        if (v && modes.includes(v)) (p.fingerprint as Record<string, unknown>)[k] = v;
+      };
+      setMode('canvas'); setMode('webGlImage'); setMode('webGlMeta'); setMode('audioContext');
+      setMode('mediaDevices'); setMode('webRTC'); setMode('fontEnable'); setMode('clientRects');
+      setMode('webGPU'); setMode('hardwareAccelerate');
+    };
+
+    const count = Math.max(1, Math.min(50, Math.floor(payload.count ?? 1)));
+    let last: BrowserProfile | null = null;
+
+    for (let i = 0; i < count; i++) {
+      const name = count > 1 ? `${payload.name} ${i + 1}` : payload.name;
+      let profile: BrowserProfile = payload.templateId
+        ? createFromTemplate(payload.templateId, name, machineGeo ?? undefined)
+        : createProfile(name, machineGeo ?? undefined, payload.deviceOptions);
+
+      if (payload.group) profile.group = payload.group;
+      if (payload.browserEngine) profile.browserEngine = payload.browserEngine;
+      if (payload.tags?.length) profile.tags = payload.tags;
+      if (payload.remark) profile.remark = payload.remark;
+      if (payload.color) profile.color = payload.color;
+      if (payload.headless != null) profile.headless = payload.headless;
+      if (payload.openUrls?.length) profile.openUrls = payload.openUrls;
+      else profile.openUrls = [DEFAULT_STARTUP_URL];
+      if (payload.extensionIds?.length) profile.extensions = payload.extensionIds;
+      applyFpOverrides(profile);
+
+      if (sharedProxy) profile.proxy = { ...sharedProxy };
+
+      if (proxyExitIp && payload.alignGeo !== false) {
+        profile = await alignProfileWithProxyIp(profile, proxyExitIp);
+      } else if (!sharedProxy && machineGeo) {
+        profile.fingerprint = alignFingerprintWithGeo(profile.fingerprint, machineGeo);
+      }
+
+      await profileStore.save(profile);
+      await fireWebhook('profile.created', { profileId: profile.id, profileName: profile.name });
+      last = profile;
+    }
+
+    void last;
+    return profileStore.list();
   });
 
   ipcMain.handle('profiles:bulkLaunch', async (_e, ids: string[]) => {
@@ -463,15 +675,25 @@ function registerIpcHandlers() {
 
     profile = prepared.profile;
 
-    profile.lastOpened = Date.now();
-
-    await profileStore.save(profile);
-
     const warnings = antidetectWarnings(profile.fingerprint, !!(profile.proxy.host && profile.proxy.port));
 
-    const result = await browserLauncher.launch(profile, profileStore.getDataDir(), prepared.activeProxy);
+    const display = screen.getPrimaryDisplay().workAreaSize;
+    const result = await browserLauncher.launch(profile, profileStore.getDataDir(), prepared.activeProxy, {
+      displaySize: { width: display.width, height: display.height },
+    });
 
     if (result.success) {
+      profile.lastOpened = Date.now();
+      try {
+        await profileStore.save(profile);
+      } catch (err) {
+        await browserLauncher.close(profile.id).catch(() => {});
+        return {
+          success: false,
+          profileId: id,
+          error: `Launch succeeded but profile state could not be saved: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
       await audit('profile.launch', profile.name, result.fpScore != null ? `fpScore=${result.fpScore}` : undefined);
       await fireWebhook('profile.launched', {
         profileId: profile.id,
@@ -486,10 +708,54 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle('browser:close', async (_e, id: string) => {
+    requirePerm('profiles:launch');
+    try {
+      await browserLauncher.close(id);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
 
-    await browserLauncher.close(id);
+  ipcMain.handle('browser:openUrl', async (_e, id: string, url: string) => {
 
-    return { success: true };
+    requirePerm('profiles:launch');
+
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+      if (!['http:', 'https:'].includes(parsed.protocol)) {
+        return { success: false, error: 'Only http and https URLs are allowed' };
+      }
+    } catch {
+      return { success: false, error: 'Invalid URL' };
+    }
+
+    if (!browserLauncher.isRunning(id)) {
+
+      let profile = await profileStore.get(id);
+
+      if (!profile) return { success: false, error: 'Profile not found' };
+
+      const prepared = await prepareProfileForLaunch(profile, proxyManager);
+
+      profile = prepared.profile;
+
+      const display = screen.getPrimaryDisplay().workAreaSize;
+      const result = await browserLauncher.launch(profile, profileStore.getDataDir(), prepared.activeProxy, {
+        displaySize: { width: display.width, height: display.height },
+      });
+
+      if (!result.success) return { success: false, error: result.error };
+
+      profile.lastOpened = Date.now();
+      await profileStore.save(profile).catch((err) => console.warn('Save lastOpened failed:', err));
+
+    }
+
+    const opened = await browserLauncher.openProfileUrl(id, parsed.href);
+
+    return { success: opened, error: opened ? undefined : 'Could not open URL' };
 
   });
 
@@ -653,7 +919,20 @@ function registerIpcHandlers() {
 
   ipcMain.handle('proxy:check', async (_e, id: string) => proxyManager.checkHealth(id));
 
+  ipcMain.handle('proxy:checkConfig', async (_e, proxy: import('../src/types/profile.js').ProxyConfig) =>
+    proxyManager.checkProxyConfig('inline', proxy),
+  );
+
   ipcMain.handle('proxy:checkAll', () => proxyManager.checkAll());
+
+  ipcMain.handle('proxy:checkIp', async (_e, ip?: string) => {
+    try {
+      const { checkIp } = await import('../src/core/proxy/ip-checker.js');
+      return await checkIp(ip);
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
 
   ipcMain.handle('proxy:applyToProfile', async (_e, profileId: string, proxyId: string) => {
 
@@ -695,20 +974,91 @@ function registerIpcHandlers() {
 
 
 
+  ipcMain.handle('profiles:setInlineProxy', async (_e, profileId: string, raw: { host: string; port: string; account?: string; password?: string; type?: string } | null) => {
+
+    requirePerm('profiles:edit');
+
+    if (!raw || !raw.host || !raw.port) {
+      const cleared = await profileStore.assignProxy(profileId, { category: '1', type: 'noproxy', host: '', port: '', rotationMode: 'off' });
+      return cleared;
+    }
+
+    const config = {
+      category: '4',
+      type: raw.type === 'socks5' ? 'socks5' : 'http',
+      host: raw.host,
+      port: raw.port,
+      account: raw.account,
+      password: raw.password,
+      rotationMode: 'off' as const,
+    };
+
+    let profile = await profileStore.assignProxy(profileId, config);
+    if (profile) {
+      const health = await proxyManager.checkProxyConfig('inline', config);
+      if (health.exitIp) {
+        profile = (await alignProfileWithProxyIp(profile, health.exitIp));
+        await profileStore.save(profile);
+      }
+      return { profile, health };
+    }
+    return { profile, health: null };
+
+  });
+
   // Extensions
 
   ipcMain.handle('extensions:list', () => extensionLoader.list());
 
   ipcMain.handle('extensions:import', async (_e, sourcePath: string, name?: string) => extensionLoader.importUnpacked(sourcePath, name));
 
-  ipcMain.handle('extensions:importBroearn', async () => {
+  ipcMain.handle('extensions:installFromStore', async (_e, urlOrId: string) => {
+    requirePerm('profiles:edit');
+    try {
+      const id = parseChromeExtensionId(urlOrId);
+      if (!id) return { error: 'Invalid Chrome Web Store URL or extension ID' };
+      const downloaded = await downloadExtensionFromStore(id, extensionLoader.getExtensionsDir());
+      const list = await extensionLoader.importUnpacked(downloaded.path, downloaded.name, id);
+      const entry = list.find((e) => e.id === id);
+      await audit('extension.install', entry?.name ?? id, 'chrome-store');
+      return { name: entry?.name ?? downloaded.name, extensions: list };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
 
-    const broearnExt = path.join(process.env.LOCALAPPDATA ?? '', 'BroearnBrowser', 'ExtensionUnpacked');
+  ipcMain.handle('extensions:importFolder', async () => {
+    requirePerm('profiles:edit');
+    const win = BrowserWindow.getFocusedWindow() ?? mainWindow;
+    if (!win) return { error: 'No window available', canceled: true, filePaths: [] };
+    const result = await dialog.showOpenDialog(win, { properties: ['openDirectory'] });
+    if (result.canceled || !result.filePaths[0]) return { canceled: true };
+    try {
+      const list = await extensionLoader.importUnpacked(result.filePaths[0]);
+      const entry = list[list.length - 1];
+      return { name: entry?.name, extensions: list };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
 
-    const count = await extensionLoader.importFromBroearn(broearnExt);
-
-    return { count, extensions: await extensionLoader.list() };
-
+  ipcMain.handle('extensions:importCrx', async () => {
+    requirePerm('profiles:edit');
+    const win = BrowserWindow.getFocusedWindow() ?? mainWindow;
+    if (!win) return { error: 'No window available', canceled: true, filePaths: [] };
+    const result = await dialog.showOpenDialog(win, {
+      properties: ['openFile'],
+      filters: [{ name: 'Chrome Extension', extensions: ['crx'] }],
+    });
+    if (result.canceled || !result.filePaths[0]) return { canceled: true };
+    try {
+      const extracted = await extractCrxFile(result.filePaths[0], extensionLoader.getExtensionsDir());
+      const id = path.basename(extracted.path);
+      const list = await extensionLoader.importUnpacked(extracted.path, extracted.name, id);
+      return { name: extracted.name, extensions: list };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
   });
 
   ipcMain.handle('extensions:remove', async (_e, id: string) => extensionLoader.remove(id));
@@ -726,22 +1076,6 @@ function registerIpcHandlers() {
     await profileStore.save(profile);
 
     return profile;
-
-  });
-
-
-
-  // Import
-
-  ipcMain.handle('import:broearn', async (_e, sourceDir: string) => {
-
-    requirePerm('profiles:import');
-
-    const imported = await importBroearnProfiles(sourceDir);
-
-    for (const p of imported) await profileStore.save(p);
-
-    return { count: imported.length, profiles: await profileStore.list() };
 
   });
 
@@ -841,8 +1175,6 @@ function registerIpcHandlers() {
 
     dataDir: DATA_DIR,
 
-    broearnDefault: path.join(process.env.LOCALAPPDATA ?? '', 'BroearnBrowser'),
-
     automationUrl: `http://127.0.0.1:${AUTOMATION_PORT}`,
 
     version: app.getVersion(),
@@ -853,7 +1185,18 @@ function registerIpcHandlers() {
 
   }));
 
-  ipcMain.handle('shell:openExternal', (_e, url: string) => shell.openExternal(url));
+  ipcMain.handle('shell:openExternal', (_e, url: string) => {
+    try {
+      const parsed = new URL(url);
+      if (!['http:', 'https:'].includes(parsed.protocol)) {
+        throw new Error(`Blocked: only http/https URLs are allowed (got ${parsed.protocol})`);
+      }
+      return shell.openExternal(url);
+    } catch (err) {
+      console.error('[shell:openExternal] Blocked:', url, err);
+      return Promise.resolve();
+    }
+  });
 
 
 
@@ -885,13 +1228,15 @@ function registerIpcHandlers() {
 
     requirePerm('profiles:create');
 
+    const safeCount = Math.max(1, Math.min(500, Math.floor(count ?? 1)));
+
     const geo = await lookupGeoFromIp();
 
-    const profiles = bulkCreateFromTemplate(templateId, count, namePrefix, geo ?? undefined);
+    const profiles = bulkCreateFromTemplate(templateId, safeCount, namePrefix, geo ?? undefined);
 
     await profileStore.saveMany(profiles);
 
-    await audit('profile.bulkCreate', namePrefix, `count=${count}`);
+    await audit('profile.bulkCreate', namePrefix, `count=${safeCount}`);
 
     return profileStore.list();
 
@@ -952,10 +1297,11 @@ function registerIpcHandlers() {
   ipcMain.handle('cookies:export', async (_e, profileId: string, format: 'json' | 'netscape') => {
 
     const win = BrowserWindow.getFocusedWindow() ?? mainWindow;
+    if (!win) return { error: 'No window available', canceled: true, filePaths: [] };
 
     const ext = format === 'json' ? 'json' : 'txt';
 
-    const result = await dialog.showSaveDialog(win!, {
+    const result = await dialog.showSaveDialog(win, {
 
       title: 'Export cookies',
 
@@ -976,8 +1322,9 @@ function registerIpcHandlers() {
   ipcMain.handle('cookies:import', async (_e, profileId: string, format: 'json' | 'netscape') => {
 
     const win = BrowserWindow.getFocusedWindow() ?? mainWindow;
+    if (!win) return { error: 'No window available', canceled: true, filePaths: [] };
 
-    const result = await dialog.showOpenDialog(win!, {
+    const result = await dialog.showOpenDialog(win, {
 
       title: 'Import cookies',
 
@@ -1068,8 +1415,9 @@ function registerIpcHandlers() {
   ipcMain.handle('dialog:openFile', async (_e, filters?: { name: string; extensions: string[] }[]) => {
 
     const win = BrowserWindow.getFocusedWindow() ?? mainWindow;
+    if (!win) return { error: 'No window available', canceled: true, filePaths: [] };
 
-    const result = await dialog.showOpenDialog(win!, { properties: ['openFile'], filters });
+    const result = await dialog.showOpenDialog(win, { properties: ['openFile'], filters });
 
     return result.canceled ? null : result.filePaths[0] ?? null;
 

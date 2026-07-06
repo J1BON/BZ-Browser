@@ -55,7 +55,7 @@ async function hashPath(target: string): Promise<string | null> {
   try {
     const stat = await fs.stat(target);
     if (stat.isDirectory()) {
-      const entries = await fs.readdir(target, { withFileTypes: true });
+      const entries = (await fs.readdir(target, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name));
       let combined = '';
       for (const entry of entries) {
         const childHash = await hashPath(path.join(target, entry.name));

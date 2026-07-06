@@ -54,6 +54,26 @@ export interface ElectronAPI {
 
   createProfile: (name: string, group?: string, options?: { formFactor?: 'desktop' | 'mobile'; device?: string }) => Promise<BrowserProfile[]>;
 
+  createProfileFull: (payload: {
+    name: string;
+    count?: number;
+    group?: string;
+    tags?: string[];
+    remark?: string;
+    color?: string;
+    templateId?: string;
+    browserEngine?: 'chrome' | 'firefox';
+    deviceOptions?: { formFactor?: 'desktop' | 'mobile'; device?: string };
+    fingerprint?: Partial<Record<'canvas' | 'webGlImage' | 'webGlMeta' | 'audioContext' | 'mediaDevices' | 'webRTC' | 'fontEnable' | 'clientRects' | 'webGPU' | 'hardwareAccelerate', string>>;
+    proxyMode?: 'none' | 'saved' | 'new';
+    proxyId?: string;
+    proxyNew?: { name: string; host: string; port: string; account?: string; password?: string; type?: string };
+    alignGeo?: boolean;
+    openUrls?: string[];
+    extensionIds?: string[];
+    headless?: boolean;
+  }) => Promise<BrowserProfile[]>;
+
   regenerateDevice: (id: string) => Promise<{ profile?: BrowserProfile; error?: string; profiles: BrowserProfile[] }>;
 
   bulkLaunch: (ids: string[]) => Promise<BulkLaunchResult>;
@@ -61,6 +81,8 @@ export interface ElectronAPI {
   launchBrowser: (id: string) => Promise<LaunchResult>;
 
   closeBrowser: (id: string) => Promise<{ success: boolean }>;
+
+  openProfileUrl: (id: string, url: string) => Promise<{ success: boolean; error?: string }>;
 
   isBrowserRunning: (id: string) => Promise<boolean>;
 
@@ -107,22 +129,27 @@ export interface ElectronAPI {
   deleteProxy: (id: string) => Promise<SavedProxy[]>;
 
   checkProxy: (id: string) => Promise<ProxyHealthResult>;
+  checkProxyConfig: (proxy: { host: string; port: string; account?: string; password?: string; category?: string; type?: string }) => Promise<ProxyHealthResult>;
 
   checkAllProxies: () => Promise<ProxyHealthResult[]>;
 
   applyProxyToProfile: (profileId: string, proxyId: string) => Promise<BrowserProfile | null>;
 
+  setInlineProxy: (profileId: string, raw: { host: string; port: string; account?: string; password?: string; type?: string } | null) => Promise<{ profile: BrowserProfile | null; health: ProxyHealthResult | null } | BrowserProfile | null>;
+
   listExtensions: () => Promise<ExtensionEntry[]>;
 
   importExtension: (path: string, name?: string) => Promise<ExtensionEntry[]>;
 
-  importBroearnExtensions: () => Promise<{ count: number; extensions: ExtensionEntry[] }>;
+  installExtensionFromStore: (urlOrId: string) => Promise<{ name?: string; extensions?: ExtensionEntry[]; error?: string }>;
+
+  importExtensionFolder: () => Promise<{ name?: string; extensions?: ExtensionEntry[]; error?: string; canceled?: boolean }>;
+
+  importExtensionCrx: () => Promise<{ name?: string; extensions?: ExtensionEntry[]; error?: string; canceled?: boolean }>;
 
   removeExtension: (id: string) => Promise<ExtensionEntry[]>;
 
   assignExtensions: (profileId: string, extensionIds: string[]) => Promise<BrowserProfile | null>;
-
-  importBroearn: (sourceDir: string) => Promise<{ count: number; profiles: BrowserProfile[] }>;
 
   getSyncStatus: () => Promise<SyncState>;
 
@@ -144,7 +171,7 @@ export interface ElectronAPI {
 
   getAutomationStatus: () => Promise<AutomationStatus>;
 
-  getAppPaths: () => Promise<{ dataDir: string; broearnDefault: string; automationUrl: string; version: string; isPackaged: boolean; bundledChromium?: boolean }>;
+  getAppPaths: () => Promise<{ dataDir: string; automationUrl: string; version: string; isPackaged: boolean; bundledChromium?: boolean }>;
 
   openExternal: (url: string) => Promise<void>;
 

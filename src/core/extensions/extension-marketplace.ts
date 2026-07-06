@@ -5,7 +5,6 @@ export interface MarketplaceExtension {
   description: string;
   category: string;
   chromeStoreId?: string;
-  broearnBundled?: boolean;
 }
 
 export const EXTENSION_MARKETPLACE: MarketplaceExtension[] = [

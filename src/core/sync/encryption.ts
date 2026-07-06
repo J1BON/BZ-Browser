@@ -21,6 +21,10 @@ export function encryptBuffer(data: Buffer, passphrase: string): Buffer {
 }
 
 export function decryptBuffer(payload: Buffer, passphrase: string): Buffer {
+  const MIN_PAYLOAD = SALT_LENGTH + IV_LENGTH + AUTH_TAG_LENGTH;
+  if (payload.length < MIN_PAYLOAD) {
+    throw new Error(`Ciphertext too short (${payload.length} < ${MIN_PAYLOAD} bytes)`);
+  }
   const salt = payload.subarray(0, SALT_LENGTH);
   const iv = payload.subarray(SALT_LENGTH, SALT_LENGTH + IV_LENGTH);
   const authTag = payload.subarray(SALT_LENGTH + IV_LENGTH, SALT_LENGTH + IV_LENGTH + AUTH_TAG_LENGTH);
@@ -48,7 +52,11 @@ export function verifyPassphrase(storedHash: string, passphrase: string): boolea
     const derived = scryptSync(passphrase, salt, expected.length, { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
     return expected.length === derived.length && timingSafeEqual(expected, derived);
   }
-  return hashString(passphrase) === storedHash;
+  // Timing-safe comparison to prevent timing attacks on legacy hashes
+  const a = Buffer.from(hashString(passphrase), 'hex');
+  const b = Buffer.from(storedHash, 'hex');
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
 }
 
 export function hashPassphrase(passphrase: string): string {

@@ -29,7 +29,9 @@ export class TeamManager {
   }
 
   async save(): Promise<void> {
-    await fs.writeFile(this.configPath, JSON.stringify(this.config, null, 2));
+    const tmp = this.configPath + '.tmp';
+    await fs.writeFile(tmp, JSON.stringify(this.config, null, 2));
+    await fs.rename(tmp, this.configPath);
   }
 
   async setCurrentUser(email: string): Promise<TeamState> {
@@ -56,7 +58,9 @@ export class TeamManager {
         currentUserEmail: null,
         currentRole: null,
         members: this.config.members,
-        permissions: ROLE_PERMISSIONS.owner,
+        // Only grant owner-level access when no members are configured (fresh install / local-only mode)
+        // If members exist, a non-authenticated user gets no permissions
+        permissions: this.config.members.length === 0 ? ROLE_PERMISSIONS.owner : [],
       };
     }
 

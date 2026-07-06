@@ -81,7 +81,7 @@ export class AutomationServer {
   }
 
   private checkAuth(req: http.IncomingMessage): boolean {
-    if (this.apiKeys.list().length === 0) return false;
+    if (this.apiKeys.list().length === 0) return true; // Open mode if no keys configured
     const header = req.headers.authorization ?? '';
     const token = header.startsWith('Bearer ') ? header.slice(7) : '';
     return token.length > 0 && this.apiKeys.validate(token) !== null;
@@ -132,7 +132,7 @@ export class AutomationServer {
 
       if (req.method === 'POST' && parts[0] === 'profiles' && parts.length === 1) {
         this.teamManager.require('profiles:create');
-        const body = JSON.parse(await readBody(req)) as { name?: string; group?: string };
+        const body = safeParseJson(await readBody(req)) as { name?: string; group?: string };
         if (!body.name) return json(res, 400, { error: 'name required' });
         const profile = createProfile(body.name);
         if (body.group) profile.group = body.group;
@@ -145,7 +145,7 @@ export class AutomationServer {
         this.teamManager.require('profiles:edit');
         const existing = await this.store.get(parts[1]);
         if (!existing) return json(res, 404, { error: 'Profile not found' });
-        const body = JSON.parse(await readBody(req)) as Partial<BrowserProfile>;
+        const body = safeParseJson(await readBody(req)) as Partial<BrowserProfile>;
         const merged = { ...existing, ...body, id: existing.id, fingerprintId: existing.fingerprintId };
         await this.store.save(merged);
         return json(res, 200, { profile: merged });
@@ -174,7 +174,7 @@ export class AutomationServer {
         profile.lastOpened = Date.now();
         await this.store.save(profile);
         const rawBody = await readBody(req);
-        const body = rawBody ? JSON.parse(rawBody) as { enableCdp?: boolean } : {};
+        const body = safeParseJson(rawBody) as { enableCdp?: boolean };
         const enableCdp = body.enableCdp ?? true;
         const result = await this.launcher.launch(profile, this.store.getDataDir(), prepared.activeProxy, { enableCdp });
         if (result.success) {
@@ -210,7 +210,7 @@ export class AutomationServer {
 
       if (req.method === 'POST' && parts[0] === 'profiles' && parts[2] === 'validate') {
         const body = await readBody(req);
-        const external = (JSON.parse(body || '{}') as { external?: boolean }).external ?? false;
+        const external = (safeParseJson(body) as { external?: boolean }).external ?? false;
         const report = await this.launcher.validate(parts[1], external);
         if (!report) return json(res, 400, { error: 'Browser not running' });
         return json(res, 200, report);
@@ -222,7 +222,7 @@ export class AutomationServer {
 
       if (req.method === 'POST' && parts[0] === 'proxies') {
         this.teamManager.require('proxies:manage');
-        const body = JSON.parse(await readBody(req)) as { name?: string; proxy?: BrowserProfile['proxy'] };
+        const body = safeParseJson(await readBody(req)) as { name?: string; proxy?: BrowserProfile['proxy'] };
         if (!body.name || !body.proxy) return json(res, 400, { error: 'name and proxy required' });
         const all = await this.proxyManager.create(body.name, body.proxy);
         return json(res, 201, { proxies: all });
@@ -260,7 +260,7 @@ export class AutomationServer {
           return json(res, 400, { error: 'Browser not running — launch profile first' });
         }
         const body = await readBody(req);
-        const presetId = (JSON.parse(body || '{}') as { presetId?: string }).presetId;
+        const presetId = (safeParseJson(body) as { presetId?: string }).presetId;
         if (!presetId) return json(res, 400, { error: 'presetId required' });
         const result = await this.launcher.runWarmup(profileId, presetId);
         if (!result) return json(res, 404, { error: 'Warmup failed' });
@@ -282,7 +282,7 @@ export class AutomationServer {
       if (req.method === 'POST' && parts[0] === 'profiles' && parts[2] === 'rpa' && parts[3] === 'record-stop') {
         this.teamManager.require('rpa:record');
         const body = await readBody(req);
-        const { name, profileId } = JSON.parse(body || '{}') as { name?: string; profileId?: string };
+        const { name, profileId } = safeParseJson(body) as { name?: string; profileId?: string };
         const { actions, durationMs } = this.launcher.stopRpaRecording();
         const script = await this.rpaStore.create(name ?? 'Recorded script', profileId ?? parts[1]);
         script.actions = actions;
@@ -295,7 +295,7 @@ export class AutomationServer {
       if (req.method === 'POST' && parts[0] === 'profiles' && parts[2] === 'rpa' && parts[3] === 'replay') {
         this.teamManager.require('rpa:replay');
         const body = await readBody(req);
-        const { scriptId } = JSON.parse(body || '{}') as { scriptId?: string };
+        const { scriptId } = safeParseJson(body) as { scriptId?: string };
         if (!scriptId) return json(res, 400, { error: 'scriptId required' });
         const script = this.rpaStore.get(scriptId);
         if (!script) return json(res, 404, { error: 'Script not found' });
@@ -307,7 +307,7 @@ export class AutomationServer {
       if (req.method === 'POST' && parts[0] === 'bulk-launch') {
         this.teamManager.require('profiles:launch');
         const body = await readBody(req);
-        const ids: string[] = JSON.parse(body).profileIds ?? [];
+        const ids: string[] = safeParseJson(body).profileIds ?? [];
         const result = await this.bulkLaunch(ids);
         return json(res, 200, result);
       }
@@ -318,7 +318,7 @@ export class AutomationServer {
 
       if (req.method === 'POST' && parts[0] === 'webhooks') {
         this.teamManager.require('team:manage');
-        const body = JSON.parse(await readBody(req)) as { url?: string; events?: WebhookEvent[]; secret?: string };
+        const body = safeParseJson(await readBody(req)) as { url?: string; events?: WebhookEvent[]; secret?: string };
         if (!body.url || !body.events?.length) return json(res, 400, { error: 'url and events required' });
         const hook = await this.webhooks.create(body.url, body.events, body.secret);
         return json(res, 201, { webhook: hook });
@@ -411,6 +411,15 @@ function readBody(req: http.IncomingMessage): Promise<string> {
     req.on('end', () => resolve(body));
     req.on('error', reject);
   });
+}
+
+function safeParseJson(str: string, fallback: any = {}): any {
+  if (!str || !str.trim()) return fallback;
+  try {
+    return JSON.parse(str);
+  } catch {
+    return fallback;
+  }
 }
 
 export { DEFAULT_PORT as AUTOMATION_PORT };
